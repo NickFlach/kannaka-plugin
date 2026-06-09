@@ -37,9 +37,10 @@ claude plugin install kannaka@kannaka
 ## Update
 
 ```bash
-claude plugin update kannaka      # pull the latest plugin
-/kannaka install                  # if a newer kannaka binary was released
-/kannaka statusline on            # idempotent — re-syncs the statusline script
+claude plugin marketplace update kannaka   # refresh the marketplace cache first
+claude plugin update kannaka@kannaka       # then update the plugin (restart to apply)
+/kannaka install                           # if a newer kannaka binary was released
+/kannaka statusline on                     # idempotent — re-syncs the stable statusline script
 ```
 
 `statusline on` copies the script to a **stable** `~/.claude/kannaka/` and points

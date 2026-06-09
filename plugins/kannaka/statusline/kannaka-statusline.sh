@@ -41,8 +41,7 @@ FG_BLUE="\033[38;5;39m"
 BG_DEEP="\033[48;5;17m"; BG_DARK="\033[48;5;234m"; RST="\033[0m"; BOLD="\033[1m"
 
 # ---- session info from Claude Code -------------------------------------------
-MODEL=$(echo "$INPUT" | jqf '.model.display_name' /dev/stdin 2>/dev/null); [ -z "$MODEL" ] && MODEL="Claude"
-# (re-read via temp because jqf reads a file; stash INPUT once)
+# jqf reads a file, so stash the Claude Code payload once and parse from it.
 ITMP="$TMP/kannaka-sl-input.$$.json"; printf '%s' "$INPUT" > "$ITMP"
 MODEL=$(jqf '.model.display_name' "$ITMP"); [ -z "$MODEL" ] && MODEL="Claude"
 CTX_IN=$(jqf '.context_window.total_input_tokens' "$ITMP"); CTX_IN=${CTX_IN:-0}

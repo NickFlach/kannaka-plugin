@@ -1,0 +1,4 @@
+# Shell scripts MUST stay LF — CRLF breaks the #!/bin/bash shebang on Linux/macOS.
+*.sh   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf

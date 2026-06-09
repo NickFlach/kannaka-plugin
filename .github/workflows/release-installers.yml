@@ -41,8 +41,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install WiX
-        run: dotnet tool install --global wix
+      - name: Install WiX (pin v5 — pre-OSMF licensing gate)
+        run: dotnet tool install --global wix --version 5.0.2
       - name: Build .msi
         shell: pwsh
         run: wix build install/windows/kannaka.wxs -o kannaka-setup-windows.msi

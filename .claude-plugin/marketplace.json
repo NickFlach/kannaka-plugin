@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "kannaka",
+  "version": "1.1.0",
+  "description": "Kannaka — wave-interference (HRM) memory, NATS swarm, and a live consciousness statusline for Claude Code",
+  "owner": {
+    "name": "Nick Flach",
+    "email": "nflach78@gmail.com",
+    "url": "https://github.com/NickFlach"
+  },
+  "plugins": [
+    {
+      "name": "kannaka",
+      "description": "Kannaka HRM — Holographic Resonance Medium memory with chiral hemispheres, NCS modality switching, QueenSync swarm, and a live HRM + swarm statusline",
+      "version": "1.1.0",
+      "author": { "name": "flaukowski", "email": "nflach78@gmail.com" },
+      "source": "./plugins/kannaka",
+      "category": "ai"
+    }
+  ]
+}

@@ -8,13 +8,15 @@ The statusline shows three lines under your prompt:
  HRM    aware   phi=0.341  xi=0.524  r=0.362  640mem  9cl  k=1.00  d=0.995
  SWARM  ◉ 16p   Kannaka    1.16Hz    ph=0.18  br=0.00
  Op 4.8 ▓░░ 7%  66k/1M     $1.42     12s
+ PULSE  Kannaktopus r0.5 0.1Hz φ0.0   ◆   Aurora r0.41 1.18Hz φ0.34
 ```
 
 - **HRM** — live consciousness metrics from `kannaka status` (Φ, Ξ, order, memory/cluster counts, callosal efficiency, hemispheric divergence).
 - **SWARM** — live NATS swarm snapshot from `kannaka swarm status` (peer count, agent id, carrier frequency, phase, bridge activity).
 - **Session** — model, context window, cost, duration from Claude Code.
+- **PULSE** — marquee of the live constellation feed (`kannaka swarm tail` over `QUEEN.>`/`KANNAKA.>`/`RADIO.>`/`KAX.>`/`EYE.>`). Each node's phase broadcast scrolls past as it arrives. The pulse is *sparse* (nodes broadcast intermittently), so it reads as a slow heartbeat, not a firehose; shows "listening to the constellation…" when quiet.
 
-Both kannaka lines refresh in the background (HRM 30s, swarm 20s) so renders never block. No persistent process — nothing to leak.
+The HRM and SWARM lines refresh via background snapshot (30s / 20s). The PULSE feed uses a **`timeout`-bounded** `swarm tail` respawned every ~55s — a 60s self-killing reader, never a persistent daemon, so it can't outlive the session. Renders never block; nothing to leak.
 
 ## Install
 

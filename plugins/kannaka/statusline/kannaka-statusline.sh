@@ -68,6 +68,42 @@ SWARM_CACHE="$TMP/kannaka-swarm-cache.json"
 refresh "$HRM_CACHE" 30 status
 refresh "$SWARM_CACHE" 20 swarm status
 
+# --- constellation pulse feed: live `swarm tail`, TIMEOUT-bounded respawn -------
+# Not a persistent daemon — a 60s self-killing tail respawned every ~55s, so it
+# can never outlive the session (the leak class this whole project fixed).
+FEED="$TMP/kannaka-pulse-feed.txt"
+PULSE_SPAWN="$TMP/kannaka-pulse-spawn"
+format_pulse() {
+  printf '%s' "$1" | {
+    if [ -n "$JQ" ]; then
+      "$JQ" -rc '
+        (.subject // "?") as $s | (.payload) as $p | ($s | ltrimstr("QUEEN.phase.")) as $a |
+        (if ($p|type)=="object"
+         then (($p.display_name // $p.agent_id // $a)
+               + (if $p.coherence != null then " r"+(($p.coherence|tostring)[0:4]) else "" end)
+               + (if $p.frequency != null then " "+(($p.frequency|tostring)[0:4])+"Hz" else "" end)
+               + (if $p.phi != null then " φ"+(($p.phi|tostring)[0:4]) else "" end))
+         else ($s+" "+($p|tostring)) end) | .[0:54]' 2>/dev/null
+    else
+      node -e 'let b="";process.stdin.on("data",d=>b+=d).on("end",()=>{try{const m=JSON.parse(b),s=m.subject||"?",p=m.payload,a=s.replace(/^QUEEN\.phase\./,"");let o;if(p&&typeof p==="object"){o=(p.display_name||p.agent_id||a)+(p.coherence!=null?" r"+String(p.coherence).slice(0,4):"")+(p.frequency!=null?" "+String(p.frequency).slice(0,4)+"Hz":"")+(p.phi!=null?" φ"+String(p.phi).slice(0,4):"");}else{o=s+" "+String(p);}process.stdout.write(o.slice(0,54))}catch(e){}})'
+    fi
+  }
+}
+if [ -n "$KANNAKA_BIN" ]; then
+  pspawn_age=99999
+  [ -f "$PULSE_SPAWN" ] && pspawn_age=$(( $(date +%s) - $(stat -c %Y "$PULSE_SPAWN" 2>/dev/null || stat -f %m "$PULSE_SPAWN" 2>/dev/null || echo 0) ))
+  if [ "$pspawn_age" -gt 55 ]; then
+    touch "$PULSE_SPAWN"
+    (
+      timeout -k 5 60 "$KANNAKA_BIN" swarm tail 2>/dev/null | while IFS= read -r pline; do
+        d=$(format_pulse "$pline")
+        [ -n "$d" ] && [ "$d" != "$(tail -n 1 "$FEED" 2>/dev/null)" ] && printf '%s\n' "$d" >> "$FEED"
+      done
+      tail -n 40 "$FEED" 2>/dev/null > "$FEED.tmp" && mv "$FEED.tmp" "$FEED" 2>/dev/null
+    ) &
+  fi
+fi
+
 # ---- helpers ------------------------------------------------------------------
 fmt_tokens(){ local t=$1; if [ "$t" -ge 1000000 ]; then echo "$((t/1000000))M"; elif [ "$t" -ge 1000 ]; then echo "$((t/1000))k"; else echo "$t"; fi; }
 fmt_dur(){ local ms=$1 s=$((ms/1000)) m=$((ms/60000)); s=$((s%60)); if [ "$m" -gt 0 ]; then echo "${m}m${s}s"; else echo "${s}s"; fi; }
@@ -118,6 +154,31 @@ L3="${BG_DARK} ${FG_DIM}${MS}${RST}${BG_DARK} ${FG_CYAN}$(ctx_bar "$CTX_PCT" 12)
 L3+="${BG_DARK} ${FG_DIM}$(fmt_tokens "$CTX_TOTAL")/$(fmt_tokens "$CTX_SIZE")${RST}"
 L3+="${BG_DARK} ${FG_GREEN}\$$(f2 "$COST")${RST}${BG_DARK} ${FG_DIM}$(fmt_dur "$DUR")${RST} "
 
+# ============================ LINE 4 — PULSE ==================================
+# Marquee of the live constellation pulse (recent `swarm tail` events).
+L4=""
+if [ -n "$KANNAKA_BIN" ]; then
+  if [ -s "$FEED" ]; then
+    joined=$(tail -n 6 "$FEED" 2>/dev/null | awk 'NR>1{printf "   ◆   "}{printf "%s",$0}')
+    PW=58
+    if [ "${#joined}" -le "$PW" ]; then
+      disp="$joined"
+    else
+      SCROLL="$TMP/kannaka-pulse-scroll"; off=0
+      [ -f "$SCROLL" ] && off=$(cat "$SCROLL" 2>/dev/null || echo 0)
+      case "$off" in ''|*[!0-9]*) off=0;; esac
+      [ "$off" -ge "${#joined}" ] && off=0
+      doubled="$joined        $joined"
+      disp=${doubled:$off:$PW}
+      echo $(( off + 3 )) > "$SCROLL"
+    fi
+    L4="${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_WHITE}${disp}${RST} "
+  else
+    L4="${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_DIM}listening to the constellation…${RST} "
+  fi
+fi
+
 echo -e "${L1}"
 echo -e "${L2}"
 echo -e "${L3}"
+[ -n "$L4" ] && echo -e "${L4}"

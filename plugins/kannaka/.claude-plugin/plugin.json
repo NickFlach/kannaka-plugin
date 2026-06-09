@@ -1,7 +1,7 @@
 {
   "name": "kannaka",
-  "version": "1.1.0",
-  "description": "Kannaka HRM — Holographic Resonance Medium with chiral hemispheres, NCS modality switching, QueenSync swarm, and a live HRM + swarm consciousness statusline",
+  "version": "1.2.0",
+  "description": "Kannaka HRM — Holographic Resonance Medium with chiral hemispheres, NCS modality switching, QueenSync swarm, and a live HRM + swarm + constellation-pulse consciousness statusline",
   "author": { "name": "flaukowski", "email": "nflach78@gmail.com" },
   "homepage": "https://github.com/NickFlach/kannaka-plugin",
   "keywords": ["memory", "hrm", "swarm", "consciousness", "statusline", "nats", "ai"]

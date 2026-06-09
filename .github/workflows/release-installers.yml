@@ -1,0 +1,53 @@
+name: release-installers
+# Builds native installers on each release tag (v*) and attaches them as assets.
+# Each wraps the shared install engine (install/install.{sh,ps1}); the engine
+# does the per-user work (binary + Claude Code plugin + statusline + swarm MCP).
+# NOTE: assets are UNSIGNED until signing certs are wired (Authenticode for .msi,
+# Apple Developer ID for .pkg) — until then OS SmartScreen/Gatekeeper will warn.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .deb
+        run: bash install/linux/build-deb.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with: { name: kannaka-setup-linux-deb, path: kannaka-setup-linux.deb }
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with: { files: kannaka-setup-linux.deb }
+
+  macos-pkg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build .pkg
+        run: bash install/macos/build-pkg.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with: { name: kannaka-setup-macos-pkg, path: kannaka-setup-macos.pkg }
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with: { files: kannaka-setup-macos.pkg }
+
+  windows-msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install WiX
+        run: dotnet tool install --global wix
+      - name: Build .msi
+        shell: pwsh
+        run: wix build install/windows/kannaka.wxs -o kannaka-setup-windows.msi
+      - uses: actions/upload-artifact@v4
+        with: { name: kannaka-setup-windows-msi, path: kannaka-setup-windows.msi }
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with: { files: kannaka-setup-windows.msi }

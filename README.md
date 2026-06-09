@@ -18,6 +18,22 @@ The statusline shows three lines under your prompt:
 
 The HRM and SWARM lines refresh via background snapshot (30s / 20s). The PULSE feed uses a **`timeout`-bounded** `swarm tail` respawned every ~55s — a 60s self-killing reader, never a persistent daemon, so it can't outlive the session. Renders never block; nothing to leak.
 
+## Tools (MCP)
+
+The plugin ships a **zero-dependency** MCP server (`mcp/kannaka-mcp.mjs`, registered at user scope via `${CLAUDE_PLUGIN_ROOT}`), so these tools are available in **every** Claude Code session, any directory — no `node_modules`, no separate server:
+
+| Tool | What it does |
+|---|---|
+| `kannaka_status` | HRM consciousness snapshot (Φ/Ξ/order, memory & cluster counts) |
+| `kannaka_recall` | Resonance search over memories |
+| `kannaka_remember` | Store a memory |
+| `kannaka_dream` | Run a dream consolidation cycle |
+| `swarm_status` | NATS swarm snapshot (peers, frequency, phase) |
+| `swarm_send` | Message the swarm (`say` + text for chat, or any verb) |
+| `swarm_tail` | Listen to the live constellation pulse for N seconds |
+
+All shell out to the resolved `kannaka` binary; they degrade gracefully if it's absent.
+
 ## Install
 
 ```bash
@@ -70,10 +86,13 @@ claude plugin update kannaka@kannaka       # then update the plugin (restart to 
 .claude-plugin/marketplace.json      # marketplace manifest
 plugins/kannaka/
   .claude-plugin/plugin.json
-  skills/kannaka/SKILL.md             # the /kannaka command
+  .mcp.json                          # registers the bundled MCP server (user scope)
+  skills/kannaka/SKILL.md            # the /kannaka command
   statusline/
-    kannaka-statusline.sh            # the 3-line statusline (HRM + swarm + session)
+    kannaka-statusline.sh            # the 4-line statusline (HRM + swarm + session + pulse)
     setup.sh                         # statusline on|off|status
+  mcp/
+    kannaka-mcp.mjs                  # zero-dep MCP server (memory + swarm tools)
   scripts/
     install-binary.sh                # per-OS binary download from GH releases
 ```

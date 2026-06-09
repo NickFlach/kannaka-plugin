@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "kannaka": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/kannaka-mcp.mjs"]
+    }
+  }
+}

@@ -18,16 +18,24 @@ case "$ACTION" in
   on)
     mkdir -p "$STABLE"
     cp "$HERE/kannaka-statusline.sh" "$STABLE/statusline.sh" && chmod +x "$STABLE/statusline.sh"
+    [ -f "$HERE/kannaka-statusline.js" ] && cp "$HERE/kannaka-statusline.js" "$STABLE/statusline.js"
     ensure_settings
-    # Explicit `bash` prefix: Claude Code on Windows spawns statusline commands via
-    # cmd.exe, which silently outputs NOTHING for a bare .sh path. Harmless elsewhere.
-    CMD="bash $(win_path "$STABLE/statusline.sh")"
+    # Prefer the Node renderer: single process, zero forks. On Windows every fork
+    # costs 200ms+ (MSYS emulation + AV scans), which pushed the bash renderer past
+    # Claude Code's statusline timeout — it printed fine but was never displayed.
+    if command -v node >/dev/null 2>&1 && [ -f "$STABLE/statusline.js" ]; then
+      CMD="node $(win_path "$STABLE/statusline.js")"
+    else
+      # bash fallback — explicit `bash` prefix: Claude Code on Windows spawns
+      # statusline commands via cmd.exe, which silently drops a bare .sh path.
+      CMD="bash $(win_path "$STABLE/statusline.sh")"
+    fi
     node -e '
       const fs=require("fs"); const p=process.argv[1], cmd=process.argv[2], prev=process.argv[3];
       const s=JSON.parse(fs.readFileSync(p,"utf8"));
       // back up the prior statusLine exactly once (sidecar keeps settings.json clean)
       if (s.statusLine && !fs.existsSync(prev) &&
-          !(s.statusLine.command||"").replace(/\\/g,"/").endsWith("/.claude/kannaka/statusline.sh")) {
+          !/\/\.claude\/kannaka\/statusline\.(sh|js)$/.test((s.statusLine.command||"").replace(/\\/g,"/"))) {
         fs.writeFileSync(prev, JSON.stringify(s.statusLine,null,2));
       }
       s.statusLine={type:"command",command:cmd,padding:0,refreshInterval:2};
@@ -53,7 +61,7 @@ case "$ACTION" in
     if [ -f "$SETTINGS" ]; then
       cur=$(node -e 'try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write((s.statusLine&&s.statusLine.command)||"(none)")}catch(e){process.stdout.write("(unreadable)")}' "$SETTINGS")
       echo "  settings statusLine: $cur"
-      case "$cur" in *"/.claude/kannaka/statusline.sh") echo "  state: ENABLED";; *) echo "  state: not enabled";; esac
+      case "$cur" in *"/.claude/kannaka/statusline.sh"|*"/.claude/kannaka/statusline.js") echo "  state: ENABLED";; *) echo "  state: not enabled";; esac
     else echo "  settings: none"; fi
     [ -f "$STABLE/statusline.sh" ] && echo "  stable script: present" || echo "  stable script: missing (run: on)"
     if [ -f "${TMPDIR:-/tmp}/kannaka-swarm-cache.json" ]; then

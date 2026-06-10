@@ -27,10 +27,34 @@ jobs:
 
   macos-pkg:
     runs-on: macos-latest
+    # HAS_SIGN flips to 'true' automatically once MACOS_CERT_P12_BASE64 is set
+    # in repo secrets — then the pkg is signed + notarized. See install/SIGNING.md.
+    env:
+      HAS_SIGN: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build .pkg
         run: bash install/macos/build-pkg.sh "${GITHUB_REF_NAME#v}"
+      - name: Sign + notarize .pkg (only when cert secret is present)
+        if: env.HAS_SIGN == 'true'
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          AC_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          AC_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          AC_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          echo "$CERT_B64" | base64 -d > cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+          productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg signed.pkg && mv signed.pkg kannaka-setup-macos.pkg
+          xcrun notarytool submit kannaka-setup-macos.pkg --apple-id "$AC_APPLE_ID" --team-id "$AC_TEAM_ID" --password "$AC_PASSWORD" --wait
+          xcrun stapler staple kannaka-setup-macos.pkg
+          rm -f cert.p12
       - uses: actions/upload-artifact@v4
         with: { name: kannaka-setup-macos-pkg, path: kannaka-setup-macos.pkg }
       - uses: softprops/action-gh-release@v2
@@ -39,6 +63,10 @@ jobs:
 
   windows-msi:
     runs-on: windows-latest
+    # HAS_SIGN flips to 'true' automatically once WINDOWS_CERT_PFX_BASE64 is set
+    # in repo secrets — then the msi is Authenticode-signed. See install/SIGNING.md.
+    env:
+      HAS_SIGN: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install WiX (pin v5 — pre-OSMF licensing gate)
@@ -46,6 +74,18 @@ jobs:
       - name: Build .msi
         shell: pwsh
         run: wix build install/windows/kannaka.wxs -o kannaka-setup-windows.msi
+      - name: Sign .msi (Authenticode, only when cert secret is present)
+        if: env.HAS_SIGN == 'true'
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          PFX_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          [IO.File]::WriteAllBytes("$PWD\cert.pfx", [Convert]::FromBase64String($env:PFX_B64))
+          $st = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+                Where-Object FullName -like "*x64*" | Select-Object -ExpandProperty FullName -First 1
+          & $st sign /fd SHA256 /f cert.pfx /p $env:PFX_PW /tr http://timestamp.digicert.com /td SHA256 kannaka-setup-windows.msi
+          Remove-Item cert.pfx
       - uses: actions/upload-artifact@v4
         with: { name: kannaka-setup-windows-msi, path: kannaka-setup-windows.msi }
       - uses: softprops/action-gh-release@v2

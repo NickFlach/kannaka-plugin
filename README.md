@@ -80,6 +80,13 @@ claude plugin update kannaka@kannaka       # then update the plugin (restart to 
 - Claude Code runs statusline commands **through bash**, which **eats backslashes** — a Windows path must use forward slashes (`C:/Users/.../statusline.sh`). `statusline on` handles this for you via `cygpath -m`.
 - A **project** `.claude/settings.json` overrides your user statusLine. If the bar doesn't change, check for a project-level override in your cwd.
 
+## Native installers & signing (maintainer)
+
+Release tags (`v*`) build `kannaka-setup-{linux.deb,macos.pkg,windows.msi}` via
+`.github/workflows/release-installers.yml`. They're **unsigned** until cert secrets are added —
+the workflow auto-signs (and notarizes on macOS) the moment they exist, no workflow edits needed.
+Copy-paste setup: **[install/SIGNING.md](install/SIGNING.md)**.
+
 ## Layout
 
 ```

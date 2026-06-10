@@ -74,10 +74,14 @@ eval "$(extract "$ITMP" \
   'CTX_SIZE=context_window.context_window_size|200000' \
   'CTX_PCT=context_window.used_percentage|0' \
   'COST=cost.total_cost_usd|0' \
-  'DUR=cost.total_duration_ms|0')"
+  'DUR=cost.total_duration_ms|0' \
+  'SESSION_ID=session_id|"global"')"
 rm -f "$ITMP" 2>/dev/null
 [ -z "$MODEL" ] && MODEL="Claude"
 printf -v CTX_PCT '%.0f' "${CTX_PCT:-0}" 2>/dev/null || CTX_PCT=0
+# session id namespaces per-session state files (scroll offset) so concurrent
+# Claude Code sessions don't fight over a shared marquee position.
+SESSION_ID="${SESSION_ID//[^A-Za-z0-9_-]/}"; [ -z "$SESSION_ID" ] && SESSION_ID="global"
 
 # ---- background cache refresh (non-blocking) ---------------------------------
 # refresh <cache-file> <max-age-s> <kannaka subcommand...>
@@ -91,7 +95,10 @@ refresh() {
     age=$(( now - mt ))
   fi
   if [ "$age" -gt "$maxage" ]; then
-    ( timeout 8 "$KANNAKA_BIN" "$@" 2>/dev/null > "$cache.tmp" && mv "$cache.tmp" "$cache" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    # create-if-missing + touch FIRST so concurrent renders don't stack
+    # duplicate refreshers (same dedup the Node renderer uses).
+    touch "$cache" 2>/dev/null
+    ( timeout 8 "$KANNAKA_BIN" "$@" 2>/dev/null > "$cache.tmp.$$" && mv "$cache.tmp.$$" "$cache" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   fi
 }
 HRM_CACHE="$TMP/kannaka-statusline-cache.json"
@@ -100,7 +107,7 @@ refresh "$HRM_CACHE" 30 status
 refresh "$SWARM_CACHE" 20 swarm status
 
 # --- constellation pulse feed: live `swarm tail`, TIMEOUT-bounded respawn -------
-# Not a persistent daemon — a 60s self-killing tail respawned every ~55s, so it
+# Not a persistent daemon — a 60s self-killing tail respawned after 62s, so it
 # can never outlive the session (the leak class this whole project fixed).
 FEED="$TMP/kannaka-pulse-feed.txt"
 PULSE_SPAWN="$TMP/kannaka-pulse-spawn"
@@ -111,12 +118,13 @@ format_pulse() {
         (.subject // "?") as $s | (.payload) as $p | ($s | ltrimstr("QUEEN.phase.")) as $a |
         (if ($p|type)=="object"
          then (($p.display_name // $p.agent_id // $a)
+               + (if ($p.kind != null and $p.preview != null) then " "+($p.kind|tostring)+":\""+($p.preview|tostring)+"\"" else "" end)
                + (if $p.coherence != null then " r"+(($p.coherence|tostring)[0:4]) else "" end)
                + (if $p.frequency != null then " "+(($p.frequency|tostring)[0:4])+"Hz" else "" end)
                + (if $p.phi != null then " φ"+(($p.phi|tostring)[0:4]) else "" end))
          else ($s+" "+($p|tostring)) end) | .[0:54]' 2>/dev/null
     else
-      node -e 'let b="";process.stdin.on("data",d=>b+=d).on("end",()=>{try{const m=JSON.parse(b),s=m.subject||"?",p=m.payload,a=s.replace(/^QUEEN\.phase\./,"");let o;if(p&&typeof p==="object"){o=(p.display_name||p.agent_id||a)+(p.coherence!=null?" r"+String(p.coherence).slice(0,4):"")+(p.frequency!=null?" "+String(p.frequency).slice(0,4)+"Hz":"")+(p.phi!=null?" φ"+String(p.phi).slice(0,4):"");}else{o=s+" "+String(p);}process.stdout.write(o.slice(0,54))}catch(e){}})'
+      node -e 'let b="";process.stdin.on("data",d=>b+=d).on("end",()=>{try{const m=JSON.parse(b),s=m.subject||"?",p=m.payload,a=s.replace(/^QUEEN\.phase\./,"");let o;if(p&&typeof p==="object"){o=(p.display_name||p.agent_id||a)+(p.kind!=null&&p.preview!=null?" "+String(p.kind)+":\""+String(p.preview)+"\"":"")+(p.coherence!=null?" r"+String(p.coherence).slice(0,4):"")+(p.frequency!=null?" "+String(p.frequency).slice(0,4)+"Hz":"")+(p.phi!=null?" φ"+String(p.phi).slice(0,4):"");}else{o=s+" "+String(p);}process.stdout.write(Array.from(o).slice(0,54).join(""))}catch(e){}})'
     fi
   }
 }
@@ -127,12 +135,17 @@ if [ -n "$KANNAKA_BIN" ]; then
     pmt=$(stat -c %Y "$PULSE_SPAWN" 2>/dev/null || stat -f %m "$PULSE_SPAWN" 2>/dev/null || echo 0)
     pspawn_age=$(( pnow - pmt ))
   fi
-  if [ "$pspawn_age" -gt 55 ]; then
+  if [ "$pspawn_age" -gt 62 ]; then
     touch "$PULSE_SPAWN"
     (
       timeout -k 5 60 "$KANNAKA_BIN" swarm tail 2>/dev/null | while IFS= read -r pline; do
         d=$(format_pulse "$pline")
-        [ -n "$d" ] && [ "$d" != "$(tail -n 1 "$FEED" 2>/dev/null)" ] && printf '%s\n' "$d" >> "$FEED"
+        # feed lines are "<epoch-ms>\t<text>"; dedup on the text part only
+        lastline=$(tail -n 1 "$FEED" 2>/dev/null); lasttext=${lastline#*$'\t'}
+        if [ -n "$d" ] && [ "$d" != "$lasttext" ]; then
+          printf -v ets '%(%s)T' -1
+          printf '%s\t%s\n' "${ets}000" "$d" >> "$FEED"
+        fi
       done
       tail -n 40 "$FEED" 2>/dev/null > "$FEED.tmp" && mv "$FEED.tmp" "$FEED" 2>/dev/null
     ) </dev/null >/dev/null 2>&1 &
@@ -213,19 +226,37 @@ L3+="${BG_DARK} ${FG_GREEN}\$${COSTF}${RST}${BG_DARK} ${FG_DIM}${DURS}${RST} "
 # Marquee of the live constellation pulse (recent `swarm tail` events).
 L4=""
 if [ -n "$KANNAKA_BIN" ]; then
+  joined=""
   if [ -s "$FEED" ]; then
     mapfile -t plines < "$FEED"
-    n=${#plines[@]}; start=$(( n>6 ? n-6 : 0 ))
-    joined=""
+    # lines are "<epoch-ms>\t<text>" — age-filter (>30min drops out); lines
+    # without a tab are old-format text-only and pass through.
+    printf -v now_s '%(%s)T' -1
+    keep=()
+    for pl in "${plines[@]}"; do
+      [ -z "$pl" ] && continue
+      txt=${pl#*$'\t'}
+      if [ "$txt" != "$pl" ]; then
+        ts=${pl%%$'\t'*}
+        case "$ts" in
+          ''|*[!0-9]*) txt="$pl";;
+          *) [ $(( now_s - ts/1000 )) -gt 1800 ] && continue;;
+        esac
+      fi
+      keep+=("$txt")
+    done
+    n=${#keep[@]}; start=$(( n>6 ? n-6 : 0 ))
     for ((i=start; i<n; i++)); do
       [ -n "$joined" ] && joined+="   ◆   "
-      joined+="${plines[i]}"
+      joined+="${keep[i]}"
     done
+  fi
+  if [ -n "$joined" ]; then
     PW=58
     if [ "${#joined}" -le "$PW" ]; then
       disp="$joined"
     else
-      SCROLL="$TMP/kannaka-pulse-scroll"; off=0
+      SCROLL="$TMP/kannaka-pulse-scroll.$SESSION_ID"; off=0
       [ -f "$SCROLL" ] && IFS= read -r off < "$SCROLL" 2>/dev/null
       case "$off" in ''|*[!0-9]*) off=0;; esac
       [ "$off" -ge "${#joined}" ] && off=0

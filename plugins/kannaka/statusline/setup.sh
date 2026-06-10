@@ -14,10 +14,16 @@ PREV="$STABLE/.prev-statusline.json"
 win_path(){ if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 ensure_settings(){ mkdir -p "$(dirname "$SETTINGS")"; [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"; }
 
+# Every path (on/off/status) edits or reads settings.json via node — fail fast
+# with a clear message instead of printing a false "ENABLED" later.
+command -v node >/dev/null 2>&1 || { echo "❌ node is required for kannaka statusline setup (settings.json wiring). Install Node.js and re-run." >&2; exit 1; }
+
 case "$ACTION" in
   on)
     mkdir -p "$STABLE"
-    cp "$HERE/kannaka-statusline.sh" "$STABLE/statusline.sh" && chmod +x "$STABLE/statusline.sh"
+    if ! { cp "$HERE/kannaka-statusline.sh" "$STABLE/statusline.sh" && chmod +x "$STABLE/statusline.sh"; }; then
+      echo "❌ failed to copy statusline script to $STABLE — statusline NOT enabled." >&2; exit 1
+    fi
     [ -f "$HERE/kannaka-statusline.js" ] && cp "$HERE/kannaka-statusline.js" "$STABLE/statusline.js"
     ensure_settings
     # Prefer the Node renderer: single process, zero forks. On Windows every fork
@@ -40,7 +46,7 @@ case "$ACTION" in
       }
       s.statusLine={type:"command",command:cmd,padding:0,refreshInterval:2};
       fs.writeFileSync(p, JSON.stringify(s,null,2)+"\n");
-    ' "$SETTINGS" "$CMD" "$PREV"
+    ' "$SETTINGS" "$CMD" "$PREV" || { echo "❌ failed to update $SETTINGS — statusline NOT enabled." >&2; exit 1; }
     echo "✅ kannaka statusline ENABLED"
     echo "   → $CMD  (refreshInterval 2s)"
     echo "   Restart the session (or wait one render) to see the HRM + SWARM lines."
@@ -53,7 +59,7 @@ case "$ACTION" in
       if (fs.existsSync(prev)) { s.statusLine=JSON.parse(fs.readFileSync(prev,"utf8")); fs.unlinkSync(prev); }
       else delete s.statusLine;
       fs.writeFileSync(p, JSON.stringify(s,null,2)+"\n");
-    ' "$SETTINGS" "$PREV"
+    ' "$SETTINGS" "$PREV" || { echo "❌ failed to update $SETTINGS — statusline NOT disabled." >&2; exit 1; }
     echo "✅ kannaka statusline DISABLED (restored previous statusLine if any)."
     ;;
   status)
@@ -64,8 +70,16 @@ case "$ACTION" in
       case "$cur" in *"/.claude/kannaka/statusline.sh"|*"/.claude/kannaka/statusline.js") echo "  state: ENABLED";; *) echo "  state: not enabled";; esac
     else echo "  settings: none"; fi
     [ -f "$STABLE/statusline.sh" ] && echo "  stable script: present" || echo "  stable script: missing (run: on)"
-    if [ -f "${TMPDIR:-/tmp}/kannaka-swarm-cache.json" ]; then
-      echo "  swarm cache: present"
+    # the Node renderer caches under os.tmpdir() (≠ MSYS /tmp on Windows) — check both
+    node_tmp="$(node -e 'process.stdout.write(require("os").tmpdir())' 2>/dev/null || true)"
+    cache_found=""
+    for t in "${TMPDIR:-/tmp}" "$node_tmp"; do
+      if [ -n "$t" ] && [ -f "$t/kannaka-swarm-cache.json" ]; then
+        echo "  swarm cache: present ($t)"; cache_found=1; break
+      fi
+    done
+    if [ -z "$cache_found" ]; then
+      echo "  swarm cache: absent (renders show '○ connecting…' until the first refresh lands)"
     fi
     ;;
   *) echo "usage: setup.sh on|off|status" >&2; exit 2;;

@@ -12,7 +12,8 @@ Kannaka is a wave-interference memory system for AI agents, powered by the Holog
 Resolve the `kannaka` binary in this order and use the first hit:
 1. `$KANNAKA_BIN` (if set and executable)
 2. `~/.local/bin/kannaka.exe` (Windows) or `~/.local/bin/kannaka` (Linux/macOS)
-3. `kannaka` / `kannaka.exe` on `PATH`
+3. `~/.kannaka/bin/kannaka.exe` (Windows) or `~/.kannaka/bin/kannaka` (Linux/macOS)
+4. `kannaka.exe` (Windows) / `kannaka` (Linux/macOS) on `PATH`
 
 If none exists, run **`/kannaka install`** (downloads the binary from GitHub releases).
 Data dir defaults to `~/.kannaka` (override with `KANNAKA_DATA_DIR`).

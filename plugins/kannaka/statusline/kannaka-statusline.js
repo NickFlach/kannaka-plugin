@@ -27,13 +27,16 @@ function resolveBin() {
     path.join(HOME, ".local/bin/kannaka.exe"), path.join(HOME, ".local/bin/kannaka"),
     path.join(HOME, ".kannaka/bin/kannaka.exe"), path.join(HOME, ".kannaka/bin/kannaka"),
   ]) if (exists(c)) return c;
-  return "kannaka"; // hope for PATH; spawn errors are ignored
+  // PATH fallback (platform-appropriate name, same order as the MCP server)
+  return process.platform === "win32" ? "kannaka.exe" : "kannaka";
 }
 function exists(p) { try { fs.accessSync(p); return true; } catch { return false; } }
 function mtimeAge(p) { try { return (Date.now() - fs.statSync(p).mtimeMs) / 1000; } catch { return 1e9; } }
 function readJson(p) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; } }
 const BIN = resolveBin();
-const HAVE_BIN = BIN !== "kannaka" || true; // PATH fallback still counts as "installed enough to try"
+// Resolved to a real file → installed. Bare-name PATH fallback → unknown; if it
+// IS on PATH the caches will populate and the "not installed" branch never shows.
+const HAVE_BIN = path.isAbsolute(BIN);
 
 // ---- session payload from Claude Code (stdin) ----------------------------------
 let payload = {};
@@ -47,6 +50,9 @@ const CTX_SIZE = g(payload, "context_window.context_window_size", 200000);
 const CTX_PCT = Math.round(g(payload, "context_window.used_percentage", 0));
 const COST = g(payload, "cost.total_cost_usd", 0);
 const DUR = g(payload, "cost.total_duration_ms", 0);
+// session id namespaces per-session state files (scroll offset) so concurrent
+// Claude Code sessions don't fight over a shared marquee position.
+const SESSION = String(g(payload, "session_id", "")).replace(/[^A-Za-z0-9_-]/g, "") || "global";
 
 // ---- background cache refresh (detached, never blocks the render) --------------
 const HRM_CACHE = path.join(TMP, "kannaka-statusline-cache.json");
@@ -61,13 +67,23 @@ function detachedNode(code) {
 }
 function refresh(cache, maxAgeS, args) {
   if (mtimeAge(cache) <= maxAgeS) return;
-  // touch first so concurrent renders don't stack duplicate refreshers
-  try { const now = new Date(); fs.utimesSync(cache, now, now); } catch { }
+  // create-if-missing THEN touch, so concurrent renders don't stack duplicate
+  // refreshers even on a cold start (utimes alone throws ENOENT on first run,
+  // which let every 2s render spawn another kannaka until the cache existed).
+  try {
+    fs.closeSync(fs.openSync(cache, "a"));
+    const now = new Date(); fs.utimesSync(cache, now, now);
+  } catch { }
   detachedNode(`
     const{execFile}=require("child_process"),fs=require("fs");
+    const tmp=${JSON.stringify(cache)}+".tmp."+process.pid; // pid-suffixed: no cross-process tmp collisions
     const p=execFile(${JSON.stringify(BIN)},${JSON.stringify(args)},{maxBuffer:8e6,windowsHide:true},(e,so)=>{
       clearTimeout(t);
-      if(!e&&so){try{fs.writeFileSync(${JSON.stringify(cache)}+".tmp",so);fs.renameSync(${JSON.stringify(cache)}+".tmp",${JSON.stringify(cache)})}catch(x){}}
+      if(!e&&so){
+        // validate before publishing — a warning on stdout must not clobber a good cache
+        try{JSON.parse(so)}catch(x){return}
+        try{fs.writeFileSync(tmp,so);fs.renameSync(tmp,${JSON.stringify(cache)})}catch(x){try{fs.unlinkSync(tmp)}catch(y){}}
+      }
     });
     const t=setTimeout(()=>{try{p.kill()}catch(x){}},8000);
   `);
@@ -76,35 +92,47 @@ refresh(HRM_CACHE, 30, ["status"]);
 refresh(SWARM_CACHE, 20, ["swarm", "status"]);
 
 // --- constellation pulse feed: live `swarm tail`, timeout-bounded respawn -------
-// Not a persistent daemon — a 60s self-killing tail respawned every ~55s, so it
-// can never outlive the session (the leak class this whole project fixed).
+// Not a persistent daemon — a 60s self-killing tail respawned by the first render
+// after 62s, so it can never outlive the session (the leak class this whole
+// project fixed). Respawn threshold > child lifetime: overlapping children would
+// each dedup only against their own `last` and double-append the same events;
+// the ≤ ~4s feed gap between children is invisible in a 40-line marquee.
 const FEED = path.join(TMP, "kannaka-pulse-feed.txt");
 const PULSE_SPAWN = path.join(TMP, "kannaka-pulse-spawn");
-if (mtimeAge(PULSE_SPAWN) > 55) {
+if (mtimeAge(PULSE_SPAWN) > 62) {
   try { fs.writeFileSync(PULSE_SPAWN, ""); } catch { }
   detachedNode(`
     const{spawn}=require("child_process"),fs=require("fs"),rl=require("readline");
     const FEED=${JSON.stringify(FEED)};
     const p=spawn(${JSON.stringify(BIN)},["swarm","tail"],{stdio:["ignore","pipe","ignore"],windowsHide:true});
     p.on("error",()=>process.exit(0));
-    let last="";try{const l=fs.readFileSync(FEED,"utf8").trimEnd().split("\\n");last=l[l.length-1]||""}catch(e){}
+    // feed lines are "<epoch-ms>\\t<text>"; old timestamp-less lines are text-only
+    const txt=l=>{const i=l.indexOf("\\t");return i<0?l:l.slice(i+1)};
+    let last="";try{const l=fs.readFileSync(FEED,"utf8").trimEnd().split("\\n");last=txt(l[l.length-1]||"")}catch(e){}
     rl.createInterface({input:p.stdout}).on("line",line=>{
       let d="";
       try{
         const m=JSON.parse(line),s=m.subject||"?",pl=m.payload,a=s.replace(/^QUEEN\\.phase\\./,"");
         if(pl&&typeof pl==="object"){
           d=(pl.display_name||pl.agent_id||a)
+            +(pl.kind!=null&&pl.preview!=null?' '+String(pl.kind)+':"'+String(pl.preview)+'"':'')
             +(pl.coherence!=null?" r"+String(pl.coherence).slice(0,4):"")
             +(pl.frequency!=null?" "+String(pl.frequency).slice(0,4)+"Hz":"")
             +(pl.phi!=null?" \\u03c6"+String(pl.phi).slice(0,4):"");
         }else{d=s+" "+String(pl);}
-        d=d.slice(0,54);
+        d=Array.from(d).slice(0,54).join(""); // code points — never split a surrogate pair
       }catch(e){}
-      if(d&&d!==last){last=d;try{fs.appendFileSync(FEED,d+"\\n")}catch(e){}}
+      if(d&&d!==last){last=d;try{fs.appendFileSync(FEED,Date.now()+"\\t"+d+"\\n")}catch(e){}}
     });
     setTimeout(()=>{
       try{p.kill()}catch(e){}
-      try{const l=fs.readFileSync(FEED,"utf8").trimEnd().split("\\n");fs.writeFileSync(FEED,l.slice(-40).join("\\n")+"\\n")}catch(e){}
+      // atomic trim (pid-suffixed tmp + rename) — renders never see a torn feed
+      try{
+        const l=fs.readFileSync(FEED,"utf8").trimEnd().split("\\n");
+        const tmp=FEED+".tmp."+process.pid;
+        fs.writeFileSync(tmp,l.slice(-40).join("\\n")+"\\n");
+        fs.renameSync(tmp,FEED);
+      }catch(e){}
       process.exit(0);
     },60000);
   `);
@@ -126,7 +154,7 @@ function ctxBar(pct, w = 12) {
   let c = FG_GREEN;
   if (pct >= 50) c = FG_CYAN; if (pct >= 70) c = FG_GOLD;
   if (pct >= 85) c = FG_ORANGE; if (pct >= 95) c = FG_RED;
-  const fill = Math.min(w, Math.floor(pct * w / 100));
+  const fill = Math.max(0, Math.min(w, Math.floor(pct * w / 100))); // clamp both ends — repeat(-n) throws
   return c + "#".repeat(fill) + FG_DIM + "-".repeat(w - fill) + RST;
 }
 
@@ -187,19 +215,31 @@ const L3 = `${BG_DARK} ${FG_DIM}${MS}${RST}${BG_DARK} ${FG_CYAN}${ctxBar(CTX_PCT
 let L4 = "";
 {
   let lines = [];
-  try { lines = fs.readFileSync(FEED, "utf8").trimEnd().split("\n").filter(Boolean); } catch { }
+  try {
+    const nowMs = Date.now(), MAX_AGE_MS = 30 * 60 * 1000;
+    lines = fs.readFileSync(FEED, "utf8").trimEnd().split("\n").map(l => {
+      // "<epoch-ms>\t<text>" — age-filter; timestamp-less lines (old format) pass through
+      const i = l.indexOf("\t");
+      if (i > 0 && /^\d+$/.test(l.slice(0, i))) {
+        return (nowMs - Number(l.slice(0, i))) <= MAX_AGE_MS ? l.slice(i + 1) : "";
+      }
+      return l;
+    }).filter(Boolean);
+  } catch { }
   if (lines.length) {
     const joined = lines.slice(-6).join("   ◆   ");
     const PW = 58;
+    // slice by code points so the window never splits a surrogate pair
+    const cps = Array.from(joined);
     let disp;
-    if (joined.length <= PW) {
+    if (cps.length <= PW) {
       disp = joined;
     } else {
-      const SCROLL = path.join(TMP, "kannaka-pulse-scroll");
+      const SCROLL = path.join(TMP, "kannaka-pulse-scroll." + SESSION); // per-session: no cross-session races
       let off = 0;
       try { off = parseInt(fs.readFileSync(SCROLL, "utf8"), 10) || 0; } catch { }
-      if (off >= joined.length) off = 0;
-      disp = (joined + "        " + joined).slice(off, off + PW);
+      if (off >= cps.length) off = 0;
+      disp = cps.concat(Array.from("        "), cps).slice(off, off + PW).join("");
       try { fs.writeFileSync(SCROLL, String(off + 3)); } catch { }
     }
     L4 = `${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_WHITE}${disp}${RST} `;

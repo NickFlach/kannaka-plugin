@@ -44,8 +44,9 @@ say "Registering marketplace + installing plugin…"
 claude plugin marketplace add NickFlach/kannaka-plugin >/dev/null 2>&1 || true
 claude plugin install kannaka@kannaka >/dev/null 2>&1 || true
 
-# 5. Enable the live statusline
-setup=$(find "$HOME/.claude/plugins/cache/kannaka" -name setup.sh 2>/dev/null | sort | tail -1)
+# 5. Enable the live statusline — version-aware sort (plain sort is lexical and
+# puts 1.9.x after 1.10.x); -V is supported by GNU coreutils and modern BSD sort.
+setup=$(find "$HOME/.claude/plugins/cache/kannaka" -name setup.sh 2>/dev/null | sort -V | tail -1)
 if [ -n "$setup" ]; then say "Enabling statusline…"; bash "$setup" on || true
 else say "Statusline: run '/kannaka statusline on' inside Claude Code to enable."; fi
 

@@ -43,13 +43,15 @@ BG_DEEP="\033[48;5;17m"; BG_DARK="\033[48;5;234m"; RST="\033[0m"; BOLD="\033[1m"
 # ---- session info from Claude Code -------------------------------------------
 # jqf reads a file, so stash the Claude Code payload once and parse from it.
 ITMP="$TMP/kannaka-sl-input.$$.json"; printf '%s' "$INPUT" > "$ITMP"
-MODEL=$(jqf '.model.display_name' "$ITMP"); [ -z "$MODEL" ] && MODEL="Claude"
-CTX_IN=$(jqf '.context_window.total_input_tokens' "$ITMP"); CTX_IN=${CTX_IN:-0}
-CTX_OUT=$(jqf '.context_window.total_output_tokens' "$ITMP"); CTX_OUT=${CTX_OUT:-0}
-CTX_SIZE=$(jqf '.context_window.context_window_size' "$ITMP"); CTX_SIZE=${CTX_SIZE:-200000}
-CTX_PCT=$(jqf '.context_window.used_percentage' "$ITMP"); CTX_PCT=$(printf '%.0f' "${CTX_PCT:-0}" 2>/dev/null || echo 0)
-COST=$(jqf '.cost.total_cost_usd' "$ITMP"); COST=${COST:-0}
-DUR=$(jqf '.cost.total_duration_ms' "$ITMP"); DUR=${DUR:-0}
+# jq prints the literal string "null" for missing fields, which defeats ${VAR:-default}
+nn(){ case "$1" in ''|null) echo "$2";; *) echo "$1";; esac; }
+MODEL=$(jqf '.model.display_name' "$ITMP"); MODEL=$(nn "$MODEL" "Claude")
+CTX_IN=$(nn "$(jqf '.context_window.total_input_tokens' "$ITMP")" 0)
+CTX_OUT=$(nn "$(jqf '.context_window.total_output_tokens' "$ITMP")" 0)
+CTX_SIZE=$(nn "$(jqf '.context_window.context_window_size' "$ITMP")" 200000)
+CTX_PCT=$(nn "$(jqf '.context_window.used_percentage' "$ITMP")" 0); CTX_PCT=$(printf '%.0f' "$CTX_PCT" 2>/dev/null || echo 0)
+COST=$(nn "$(jqf '.cost.total_cost_usd' "$ITMP")" 0)
+DUR=$(nn "$(jqf '.cost.total_duration_ms' "$ITMP")" 0)
 rm -f "$ITMP" 2>/dev/null
 
 # ---- background cache refresh (non-blocking) ---------------------------------
@@ -106,10 +108,10 @@ fi
 
 # ---- helpers ------------------------------------------------------------------
 fmt_tokens(){ local t=$1; if [ "$t" -ge 1000000 ]; then echo "$((t/1000000))M"; elif [ "$t" -ge 1000 ]; then echo "$((t/1000))k"; else echo "$t"; fi; }
-fmt_dur(){ local ms=$1 s=$((ms/1000)) m=$((ms/60000)); s=$((s%60)); if [ "$m" -gt 0 ]; then echo "${m}m${s}s"; else echo "${s}s"; fi; }
+fmt_dur(){ local ms=$1; local s=$((ms/1000)) m=$((ms/60000)); s=$((s%60)); if [ "$m" -gt 0 ]; then echo "${m}m${s}s"; else echo "${s}s"; fi; }
 f3(){ printf "%.3f" "${1:-0}" 2>/dev/null || echo "?"; }
 f2(){ printf "%.2f" "${1:-0}" 2>/dev/null || echo "?"; }
-ctx_bar(){ local pct=$1 w=${2:-12} fill=$((pct*$2/100)) c="$FG_GREEN"; [ "$pct" -ge 50 ]&&c="$FG_CYAN"; [ "$pct" -ge 70 ]&&c="$FG_GOLD"; [ "$pct" -ge 85 ]&&c="$FG_ORANGE"; [ "$pct" -ge 95 ]&&c="$FG_RED"; printf "$c"; printf "%${fill}s"|tr ' ' '#'; printf "$FG_DIM"; printf "%$((w-fill))s"|tr ' ' '-'; printf "$RST"; }
+ctx_bar(){ local pct=$1 w=${2:-12}; local fill=$((pct*w/100)) c="$FG_GREEN"; [ "$pct" -ge 50 ]&&c="$FG_CYAN"; [ "$pct" -ge 70 ]&&c="$FG_GOLD"; [ "$pct" -ge 85 ]&&c="$FG_ORANGE"; [ "$pct" -ge 95 ]&&c="$FG_RED"; printf "$c"; printf "%${fill}s"|tr ' ' '#'; printf "$FG_DIM"; printf "%$((w-fill))s"|tr ' ' '-'; printf "$RST"; }
 
 # ============================ LINE 1 — HRM ====================================
 if [ -f "$HRM_CACHE" ]; then

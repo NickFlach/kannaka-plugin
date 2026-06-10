@@ -19,7 +19,9 @@ case "$ACTION" in
     mkdir -p "$STABLE"
     cp "$HERE/kannaka-statusline.sh" "$STABLE/statusline.sh" && chmod +x "$STABLE/statusline.sh"
     ensure_settings
-    CMD="$(win_path "$STABLE/statusline.sh")"
+    # Explicit `bash` prefix: Claude Code on Windows spawns statusline commands via
+    # cmd.exe, which silently outputs NOTHING for a bare .sh path. Harmless elsewhere.
+    CMD="bash $(win_path "$STABLE/statusline.sh")"
     node -e '
       const fs=require("fs"); const p=process.argv[1], cmd=process.argv[2], prev=process.argv[3];
       const s=JSON.parse(fs.readFileSync(p,"utf8"));

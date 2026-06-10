@@ -65,7 +65,7 @@ function refresh(cache, maxAgeS, args) {
   try { const now = new Date(); fs.utimesSync(cache, now, now); } catch { }
   detachedNode(`
     const{execFile}=require("child_process"),fs=require("fs");
-    const p=execFile(${JSON.stringify(BIN)},${JSON.stringify(args)},{maxBuffer:8e6},(e,so)=>{
+    const p=execFile(${JSON.stringify(BIN)},${JSON.stringify(args)},{maxBuffer:8e6,windowsHide:true},(e,so)=>{
       clearTimeout(t);
       if(!e&&so){try{fs.writeFileSync(${JSON.stringify(cache)}+".tmp",so);fs.renameSync(${JSON.stringify(cache)}+".tmp",${JSON.stringify(cache)})}catch(x){}}
     });
@@ -85,7 +85,7 @@ if (mtimeAge(PULSE_SPAWN) > 55) {
   detachedNode(`
     const{spawn}=require("child_process"),fs=require("fs"),rl=require("readline");
     const FEED=${JSON.stringify(FEED)};
-    const p=spawn(${JSON.stringify(BIN)},["swarm","tail"],{stdio:["ignore","pipe","ignore"]});
+    const p=spawn(${JSON.stringify(BIN)},["swarm","tail"],{stdio:["ignore","pipe","ignore"],windowsHide:true});
     p.on("error",()=>process.exit(0));
     let last="";try{const l=fs.readFileSync(FEED,"utf8").trimEnd().split("\\n");last=l[l.length-1]||""}catch(e){}
     rl.createInterface({input:p.stdout}).on("line",line=>{

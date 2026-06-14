@@ -35,7 +35,7 @@ After `statusline on`, tell the user to restart the session (or wait one render)
 ### Core memory operations
 | Command | Description |
 |---------|-------------|
-| `remember <text>` | Store a memory (`--importance`, `--category`, `--modality`) |
+| `remember <text>` | Store a memory (`--importance`, `--category`, `--modality`; temporal-truth bounds `--effective`/`--observed`/`--expires` as RFC3339 — an expired fact drops out of `swarm brief`) |
 | `recall <query>` | Search memories via resonance (default `--top-k 5`) |
 | `forget <id>` | Delete a memory by UUID |
 | `boost <id>` | Boost a memory's amplitude (default 0.3) |

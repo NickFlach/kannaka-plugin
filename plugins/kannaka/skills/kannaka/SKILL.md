@@ -60,6 +60,7 @@ After `statusline on`, tell the user to restart the session (or wait one render)
 | `swarm health` | Memory immune report (dry-run); `--apply` runs reversible actions (down-rank/quarantine/expire) |
 | `swarm gaps` | Knowledge-gap report — weakly-represented / low-confidence domains (ADR-0035, `--json`) |
 | `swarm plan` | Research plan — ranks gaps into directed research tasks (ADR-0035 Wave 4, `--json`) |
+| `swarm loop` | Self-directed sensemaking cycle through the 5 swarm states (ADR-0035 Wave 4) |
 | `inbox tail` | Stream agent-to-agent inbox messages |
 
 ## Notes

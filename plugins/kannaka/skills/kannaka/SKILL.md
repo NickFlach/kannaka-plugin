@@ -57,7 +57,7 @@ After `statusline on`, tell the user to restart the session (or wait one render)
 | `swarm status` | Swarm phase snapshot (peers, frequency, coherence) — JSON |
 | `swarm sync` | Force a phase sync round |
 | `swarm brief "<topic>"` | Sensemaking brief (ADR-0035; `--peers` for swarm consensus, `--json`) |
-| `swarm health` | Memory immune report — duplicate/stale/low-conf/hallucinated (dry-run, `--json`) |
+| `swarm health` | Memory immune report (dry-run); `--apply` runs reversible actions (down-rank/quarantine/expire) |
 | `inbox tail` | Stream agent-to-agent inbox messages |
 
 ## Notes

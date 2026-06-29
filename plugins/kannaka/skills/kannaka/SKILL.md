@@ -50,6 +50,16 @@ After `statusline on`, tell the user to restart the session (or wait one render)
 | `assess` | Consciousness level (phi, xi, order metrics) |
 | `stats` | Overall system statistics |
 
+### Agentic coding loop
+| Command | Description |
+|---------|-------------|
+| `agent "<task>"` | Autonomous coding loop with filesystem/shell tools, backed by the HRM (it `recall`s context and `remember`s insights). Flags: `--cwd`, `--mode default\|yolo\|plan` (or `--yolo`/`--plan`), `--session <id>`, `--model`, `--json` (NDJSON harness backend), `--no-memory-tools`, `--no-quantum`. |
+
+### Quantum (qBraid)
+| Command | Description |
+|---------|-------------|
+| (agent tools) | `quantum_devices` / `quantum_run` / `quantum_recall` / `quantum_random` — real quantum computing via qBraid, available inside `agent`. Default device is the **free** simulator; naming a QPU runs on hardware and spends credits. `quantum_recall` runs resonance recall as amplitude amplification. Disable with `--no-quantum`. Standalone CLI/MCP: the `kannaka-quantum` package. |
+
 ### Swarm (NATS)
 | Command | Description |
 |---------|-------------|

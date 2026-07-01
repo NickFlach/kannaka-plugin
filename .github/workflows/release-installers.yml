@@ -94,14 +94,18 @@ jobs:
 
   # ───────────────────────────────────────────────────────────────────────────
   # Supply-chain trust for the installer artifacts — NO paid certs required:
-  #   • SHA256SUMS     — one checksums manifest covering all three installers.
-  #   • cosign keyless — a Sigstore signature (.sig) + cert (.pem) per artifact,
-  #     identity = THIS workflow via GitHub OIDC, recorded in the public Rekor
-  #     transparency log. Anyone can verify without a shared key (see SIGNING.md).
-  # This runs unconditionally and free; the Authenticode/Apple notarization above
-  # is the separate, cert-gated path that additionally silences OS
-  # SmartScreen/Gatekeeper. On a non-tag run (workflow_dispatch) the manifest is
-  # still built + signed to exercise the path, but nothing is attached.
+  #   • <artifact>.sha256 — per-file checksum sidecar (matches the engine-binary
+  #     convention install.sh already verifies against).
+  #   • SHA256SUMS.txt     — one manifest covering all three installers.
+  #   • cosign keyless     — a Sigstore signature (.sig) + cert (.pem) per artifact
+  #     AND for the manifest; identity = THIS workflow via GitHub OIDC, recorded
+  #     in the public Rekor transparency log. Verify without a shared key (SIGNING.md).
+  # Runs unconditionally and free. Signing is best-effort: a Sigstore/Rekor outage
+  # emits a loud warning but NEVER blocks the release (checksums still ship). The
+  # Authenticode/Apple notarization above is the separate, cert-gated path that
+  # additionally silences OS SmartScreen/Gatekeeper. On a non-tag run
+  # (workflow_dispatch) everything is built + signed to exercise the path, but
+  # nothing is attached to a release.
   # ───────────────────────────────────────────────────────────────────────────
   trust:
     needs: [linux-deb, macos-pkg, windows-msi]
@@ -115,7 +119,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: SHA256SUMS manifest
+      - name: Checksums (per-file .sha256 + SHA256SUMS.txt manifest)
         working-directory: dist
         run: |
           set -euo pipefail
@@ -125,15 +129,23 @@ jobs:
             echo "no installer artifacts found in dist/" >&2
             exit 1
           fi
-          sha256sum "${files[@]}" | tee SHA256SUMS
+          : > SHA256SUMS.txt
+          for f in "${files[@]}"; do
+            # one line "<hash>  <file>" -> appended to the manifest and its own sidecar
+            sha256sum "$f" | tee -a SHA256SUMS.txt > "$f.sha256"
+          done
+          echo "---- SHA256SUMS.txt ----"
+          cat SHA256SUMS.txt
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
       - name: Sign artifacts + manifest (keyless / Sigstore)
+        id: sign
+        continue-on-error: true # a Sigstore outage must never block a release
         working-directory: dist
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for f in kannaka-setup-*.deb kannaka-setup-*.pkg kannaka-setup-*.msi SHA256SUMS; do
+          for f in kannaka-setup-*.deb kannaka-setup-*.pkg kannaka-setup-*.msi SHA256SUMS.txt; do
             [ -e "$f" ] || continue
             echo "signing $f"
             cosign sign-blob --yes \
@@ -141,11 +153,16 @@ jobs:
               --output-certificate "$f.pem" \
               "$f"
           done
+      - name: Warn loudly if signing did not complete
+        if: steps.sign.outcome == 'failure'
+        run: |
+          echo "::warning title=Sigstore signing failed::cosign sign-blob did not complete — the installers still ship with SHA256 checksums but WITHOUT Sigstore signatures this release. Most likely a Sigstore/Rekor/Fulcio outage; re-run this job once Sigstore is healthy. The release was NOT blocked."
       - name: Attach trust assets to the release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/SHA256SUMS
+            dist/SHA256SUMS.txt
+            dist/*.sha256
             dist/*.sig
             dist/*.pem

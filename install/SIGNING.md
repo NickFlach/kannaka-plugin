@@ -30,19 +30,22 @@ There are **two independent layers of trust**:
 
 Every release includes, alongside the three installers:
 
-- `SHA256SUMS` — checksums of all three installers
+- `<artifact>.sha256` — a per-file checksum sidecar next to each installer
+- `SHA256SUMS.txt` — one manifest with the checksums of all three installers
 - `<artifact>.sig` + `<artifact>.pem` — a cosign keyless signature and its
-  short-lived certificate, for each installer **and** for `SHA256SUMS`
+  short-lived certificate, for each installer **and** for `SHA256SUMS.txt`
+  (present unless a Sigstore outage skipped signing — see the note at the end)
 
 ### 1. Checksums
 
 ```bash
-# in the folder holding the installer(s) + SHA256SUMS
-sha256sum -c SHA256SUMS 2>/dev/null    # Linux
-shasum -a 256 -c SHA256SUMS            # macOS
+# in the folder holding the installer(s) + SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt 2>/dev/null              # Linux (all three)
+shasum -a 256 -c SHA256SUMS.txt                      # macOS (all three)
+sha256sum -c kannaka-setup-linux.deb.sha256          # or just one file, via its sidecar
 # Windows PowerShell (single file):
 #   (Get-FileHash .\kannaka-setup-windows.msi -Algorithm SHA256).Hash
-#   # compare against the matching line in SHA256SUMS
+#   # compare against the matching line in SHA256SUMS.txt
 ```
 
 ### 2. Sigstore signature (proves it was built by *this* repo's release workflow)
@@ -52,19 +55,35 @@ any artifact — here the checksums manifest itself:
 
 ```bash
 cosign verify-blob \
-  --certificate      SHA256SUMS.pem \
-  --signature        SHA256SUMS.sig \
+  --certificate      SHA256SUMS.txt.pem \
+  --signature        SHA256SUMS.txt.sig \
   --certificate-identity-regexp '^https://github\.com/NickFlach/kannaka-plugin/\.github/workflows/release-installers\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  SHA256SUMS
+  SHA256SUMS.txt
 ```
 
-Swap `SHA256SUMS` for `kannaka-setup-windows.msi` (and its `.pem`/`.sig`) to
+Swap `SHA256SUMS.txt` for `kannaka-setup-windows.msi` (and its `.pem`/`.sig`) to
 verify an installer directly. A successful verify means the signature was
 produced by the `release-installers.yml` workflow of `NickFlach/kannaka-plugin`
 on a `v*` tag — recorded in the public [Rekor](https://docs.sigstore.dev/logging/overview/)
 transparency log. No shared key or downloaded public key is involved; the
 identity *is* the proof.
+
+### What you'll still see (SmartScreen / Gatekeeper)
+
+The Sigstore signature is **not** an OS-native code signature. Windows
+SmartScreen and macOS Gatekeeper only consult their own trust chains
+(Authenticode / Apple Developer ID) — they do **not** check Rekor — so until the
+Layer-2 certs below are configured you will still get an "unrecognized
+publisher / unidentified developer" prompt on first run:
+
+- **Windows**: SmartScreen "Windows protected your PC" → *More info* → *Run anyway*.
+- **macOS**: Gatekeeper "cannot verify the developer" → *System Settings › Privacy
+  & Security › Open Anyway* (or `xattr -d com.apple.quarantine kannaka-setup-macos.pkg`).
+
+That prompt is expected and does not mean the download is untrusted — it means
+the OS can't vouch for it *for you*. The checksum + `cosign verify-blob` above
+let you establish trust yourself; Layer 2 removes the prompt entirely.
 
 ---
 

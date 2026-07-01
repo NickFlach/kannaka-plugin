@@ -3,6 +3,13 @@
 # engine as the invoking (non-root) user so paths land in their home, not root's.
 set -eu
 VER="${1:-1.3.0}"
+# Debian versions must start with a digit. Tag builds pass e.g. "1.4.0"; a
+# workflow_dispatch off a branch passes the branch name ("master") — keep that
+# valid + traceable instead of failing dpkg-deb.
+case "$VER" in
+  [0-9]*) ;;
+  *) VER="0.0.0+$VER" ;;
+esac
 ROOT="$(pwd)/_deb"
 rm -rf "$ROOT"
 mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/share/kannaka" "$ROOT/usr/bin"

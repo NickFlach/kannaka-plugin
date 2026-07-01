@@ -1,0 +1,44 @@
+name: ci
+# Sanity + version-pin checks for the plugin. (Native installer packaging lives
+# in release-installers.yml and only runs on v* tags — this is the everyday gate.)
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: bash -n — syntax-check every shell script
+        run: |
+          set -euo pipefail
+          rc=0
+          while IFS= read -r f; do
+            if bash -n "$f"; then echo "ok   $f"; else echo "FAIL $f"; rc=1; fi
+          done < <(find . -name '*.sh' -not -path './.git/*')
+          exit $rc
+
+      - name: node --check — parse every .mjs/.js
+        run: |
+          set -euo pipefail
+          rc=0
+          while IFS= read -r f; do
+            if node --check "$f"; then echo "ok   $f"; else echo "FAIL $f"; rc=1; fi
+          done < <(find . \( -name '*.mjs' -o -name '*.js' \) -not -path './.git/*')
+          exit $rc
+
+      - name: version-pin — kannaka-memory latest release + installer assets exist
+        run: bash .github/scripts/check-release-assets.sh

@@ -1,18 +1,88 @@
-# Code-signing the native installers — come-back checklist
+# Installer trust — verifying & signing the native installers
 
-The `release-installers.yml` workflow **already has the signing steps wired in**. They're
-inert until you add the cert secrets below. **You don't edit any workflow code** — just add
-the GitHub secrets, then cut a new tag. `HAS_SIGN` flips to `true` automatically and the
-`.msi`/`.pkg` come out signed (+ notarized on macOS).
+Every tagged release attaches three native installers built by
+`release-installers.yml`:
 
-> The `.deb` is **not** code-signed — Linux trust is repo-level GPG (apt), not per-file. Nothing to do there.
+| Artifact | Platform |
+|---|---|
+| `kannaka-setup-linux.deb`   | Linux (Debian/Ubuntu) |
+| `kannaka-setup-macos.pkg`   | macOS |
+| `kannaka-setup-windows.msi` | Windows |
+
+There are **two independent layers of trust**:
+
+- **Layer 1 — always on, free (no certs).** A signed `SHA256SUMS` manifest plus
+  a per-artifact Sigstore *keyless* signature. This ships on every release with
+  nothing to configure. Covered in **[Verify a download](#verify-a-download)**.
+- **Layer 2 — optional, cert-gated.** OS-native code signing (Windows
+  Authenticode, macOS Developer ID + notarization) that additionally silences
+  SmartScreen / Gatekeeper. Needs paid certs. Covered in
+  **[Enable OS-native signing](#enable-os-native-signing)**.
+
+> The engine binary itself (downloaded by `install.sh` / `install.ps1` from the
+> `kannaka-memory` releases) is separately `sha256`-verified by those installers
+> against the `.sha256` sidecar published next to each binary — so the download
+> path is checksum-checked end to end even before Layer 2.
 
 ---
 
-## Windows (.msi — Authenticode)
+## Verify a download
 
-You need an **Authenticode code-signing certificate** (`.pfx`/`.p12`) from a CA (DigiCert,
-Sectigo, SSL.com, …) or an EV token export.
+Every release includes, alongside the three installers:
+
+- `SHA256SUMS` — checksums of all three installers
+- `<artifact>.sig` + `<artifact>.pem` — a cosign keyless signature and its
+  short-lived certificate, for each installer **and** for `SHA256SUMS`
+
+### 1. Checksums
+
+```bash
+# in the folder holding the installer(s) + SHA256SUMS
+sha256sum -c SHA256SUMS 2>/dev/null    # Linux
+shasum -a 256 -c SHA256SUMS            # macOS
+# Windows PowerShell (single file):
+#   (Get-FileHash .\kannaka-setup-windows.msi -Algorithm SHA256).Hash
+#   # compare against the matching line in SHA256SUMS
+```
+
+### 2. Sigstore signature (proves it was built by *this* repo's release workflow)
+
+Install [cosign](https://docs.sigstore.dev/cosign/installation/), then verify
+any artifact — here the checksums manifest itself:
+
+```bash
+cosign verify-blob \
+  --certificate      SHA256SUMS.pem \
+  --signature        SHA256SUMS.sig \
+  --certificate-identity-regexp '^https://github\.com/NickFlach/kannaka-plugin/\.github/workflows/release-installers\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+```
+
+Swap `SHA256SUMS` for `kannaka-setup-windows.msi` (and its `.pem`/`.sig`) to
+verify an installer directly. A successful verify means the signature was
+produced by the `release-installers.yml` workflow of `NickFlach/kannaka-plugin`
+on a `v*` tag — recorded in the public [Rekor](https://docs.sigstore.dev/logging/overview/)
+transparency log. No shared key or downloaded public key is involved; the
+identity *is* the proof.
+
+---
+
+## Enable OS-native signing
+
+**come-back checklist.** `release-installers.yml` **already has the Authenticode /
+Apple signing steps wired in**. They're inert until you add the cert secrets
+below. **You don't edit any workflow code** — just add the GitHub secrets, then
+cut a new tag. `HAS_SIGN` flips to `true` automatically and the `.msi` / `.pkg`
+come out signed (+ notarized on macOS).
+
+> The `.deb` is **not** OS-code-signed — Linux trust is repo-level GPG (apt), not
+> per-file. Layer-1 checksum + Sigstore signature still cover it.
+
+### Windows (.msi — Authenticode)
+
+You need an **Authenticode code-signing certificate** (`.pfx`/`.p12`) from a CA
+(DigiCert, Sectigo, SSL.com, …) or an EV token export.
 
 ```bash
 # 1. base64-encode the .pfx (one line, no wrapping)
@@ -28,7 +98,7 @@ gh secret set WINDOWS_CERT_PASSWORD   --repo NickFlach/kannaka-plugin   # paste 
 rm cert.b64
 ```
 
-## macOS (.pkg — Developer ID Installer + notarization)
+### macOS (.pkg — Developer ID Installer + notarization)
 
 You need: a **"Developer ID Installer"** certificate exported as `.p12`, and an
 **app-specific password** for `notarytool` (appleid.apple.com → Sign-In and Security).
@@ -48,22 +118,20 @@ gh secret set MACOS_NOTARY_PASSWORD --repo NickFlach/kannaka-plugin   # app-spec
 rm cert.b64
 ```
 
----
-
-## Then: trigger a signed build
+### Then: trigger a signed build
 
 ```bash
-git -C kannaka-plugin tag -f v1.3.1            # any new tag works; bump versions first if you like
-git -C kannaka-plugin push -f origin v1.3.1
+git -C kannaka-plugin tag -f v1.4.1            # any new tag works; bump versions first if you like
+git -C kannaka-plugin push -f origin v1.4.1
 # watch:
 gh run watch --repo NickFlach/kannaka-plugin
 ```
 
-The Actions log will show **"Sign .msi …"** / **"Sign + notarize .pkg …"** running (instead of
-being skipped). The release assets `kannaka-setup-windows.msi` and `kannaka-setup-macos.pkg`
-are then signed — no SmartScreen / Gatekeeper warnings.
+The Actions log will show **"Sign .msi …"** / **"Sign + notarize .pkg …"** running
+(instead of being skipped). The release assets `kannaka-setup-windows.msi` and
+`kannaka-setup-macos.pkg` are then signed — no SmartScreen / Gatekeeper warnings.
 
-## Secrets at a glance
+### Secrets at a glance
 
 | Secret | Platform | What it is |
 |---|---|---|

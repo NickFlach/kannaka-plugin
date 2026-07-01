@@ -91,3 +91,61 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with: { files: kannaka-setup-windows.msi }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Supply-chain trust for the installer artifacts — NO paid certs required:
+  #   • SHA256SUMS     — one checksums manifest covering all three installers.
+  #   • cosign keyless — a Sigstore signature (.sig) + cert (.pem) per artifact,
+  #     identity = THIS workflow via GitHub OIDC, recorded in the public Rekor
+  #     transparency log. Anyone can verify without a shared key (see SIGNING.md).
+  # This runs unconditionally and free; the Authenticode/Apple notarization above
+  # is the separate, cert-gated path that additionally silences OS
+  # SmartScreen/Gatekeeper. On a non-tag run (workflow_dispatch) the manifest is
+  # still built + signed to exercise the path, but nothing is attached.
+  # ───────────────────────────────────────────────────────────────────────────
+  trust:
+    needs: [linux-deb, macos-pkg, windows-msi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach checksums + signatures to the release
+      id-token: write # OIDC identity for cosign keyless signing
+    steps:
+      - name: Gather installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS manifest
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(kannaka-setup-*.deb kannaka-setup-*.pkg kannaka-setup-*.msi)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no installer artifacts found in dist/" >&2
+            exit 1
+          fi
+          sha256sum "${files[@]}" | tee SHA256SUMS
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign artifacts + manifest (keyless / Sigstore)
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in kannaka-setup-*.deb kannaka-setup-*.pkg kannaka-setup-*.msi SHA256SUMS; do
+            [ -e "$f" ] || continue
+            echo "signing $f"
+            cosign sign-blob --yes \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem" \
+              "$f"
+          done
+      - name: Attach trust assets to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/SHA256SUMS
+            dist/*.sig
+            dist/*.pem

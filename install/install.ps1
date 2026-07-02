@@ -50,19 +50,26 @@ try {
   throw "Failed to download $asset from $base — check your internet connection. ($_)"
 }
 
-# Verify checksum if available (fetch tolerantly; compare strictly).
+# The release always publishes a per-file .sha256 (Sigstore + checksums trust).
+# A MISSING checksum means we cannot verify — fail closed rather than install an
+# unverified binary. (Previously a failed fetch warned and skipped verification.)
 $want = $null
 try {
   $want = (((Invoke-WebRequest -Uri "$base/$asset.sha256" -UseBasicParsing).Content) -split '\s+')[0]
-} catch { Warn "sha256 checksum unavailable, skipping verification ($_)" }
-if ($want) {
-  $got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash
-  if ($want.ToLower() -ne $got.ToLower()) {
-    Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
-    throw "kannaka.exe sha256 mismatch (expected $want, got $got)"
-  }
-  Say "sha256 verified"
+} catch {
+  Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+  throw "checksum $asset.sha256 could not be downloaded — refusing to install an unverified binary. ($_)"
 }
+if (-not $want) {
+  Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+  throw "checksum $asset.sha256 was empty — refusing to install an unverified binary."
+}
+$got = (Get-FileHash $tmpExe -Algorithm SHA256).Hash
+if ($want.ToLower() -ne $got.ToLower()) {
+  Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+  throw "kannaka.exe sha256 mismatch (expected $want, got $got)"
+}
+Say "sha256 verified"
 
 # Swap the new binary into place (handles the exe being locked while running).
 try {

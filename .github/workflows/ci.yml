@@ -42,3 +42,16 @@ jobs:
 
       - name: version-pin — kannaka-memory latest release + installer assets exist
         run: bash .github/scripts/check-release-assets.sh
+
+      - name: installer checksum hard-fail (install.sh)
+        run: bash tests/installer-checksum.sh
+
+  installer-win:
+    # install.ps1 is Windows-specific — verify its checksum hard-fail on a real
+    # Windows PowerShell, not an emulated one.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: installer checksum hard-fail (install.ps1)
+        shell: pwsh
+        run: ./tests/installer-checksum.ps1

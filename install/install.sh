@@ -47,12 +47,21 @@ if ! curl -fSL "$base/$asset" -o "$DEST/kannaka"; then
   warn "Failed to download $asset from $base — check your internet connection."
   exit 1
 fi
-if curl -fsSL "$base/$asset.sha256" -o "$DEST/.k.sha" 2>/dev/null; then
-  want=$(awk '{print $1}' "$DEST/.k.sha"); rm -f "$DEST/.k.sha"
-  if have sha256sum; then got=$(sha256sum "$DEST/kannaka" | awk '{print $1}'); else got=$(shasum -a 256 "$DEST/kannaka" | awk '{print $1}'); fi
-  [ "$want" = "$got" ] || { warn "kannaka sha256 mismatch"; exit 1; }
-  say "sha256 verified"
+# The release always publishes a per-file .sha256 (Sigstore + checksums trust).
+# A MISSING checksum means we cannot verify — fail closed rather than install an
+# unverified binary. (Previously verification was nested in the download's `if`,
+# so a missing .sha256 silently skipped it and installed unverified.)
+if ! curl -fsSL "$base/$asset.sha256" -o "$DEST/.k.sha"; then
+  warn "checksum $asset.sha256 could not be downloaded — refusing to install an unverified binary"
+  rm -f "$DEST/kannaka" "$DEST/.k.sha"; exit 1
 fi
+want=$(awk '{print $1}' "$DEST/.k.sha"); rm -f "$DEST/.k.sha"
+[ -n "$want" ] || { warn "checksum $asset.sha256 was empty — refusing to install unverified"; rm -f "$DEST/kannaka"; exit 1; }
+if have sha256sum; then got=$(sha256sum "$DEST/kannaka" | awk '{print $1}')
+elif have shasum; then got=$(shasum -a 256 "$DEST/kannaka" | awk '{print $1}')
+else warn "no sha256 tool (sha256sum/shasum) available — cannot verify"; rm -f "$DEST/kannaka"; exit 1; fi
+[ "$want" = "$got" ] || { warn "kannaka sha256 mismatch (want $want got $got)"; rm -f "$DEST/kannaka"; exit 1; }
+say "sha256 verified"
 chmod +x "$DEST/kannaka"
 ok "kannaka binary installed → $DEST/kannaka"
 

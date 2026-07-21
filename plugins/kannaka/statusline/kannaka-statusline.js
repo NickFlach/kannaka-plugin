@@ -98,12 +98,19 @@ refresh(SWARM_CACHE, 20, ["swarm", "status"]);
 // each dedup only against their own `last` and double-append the same events;
 // the ≤ ~4s feed gap between children is invisible in a 40-line marquee.
 const FEED = path.join(TMP, "kannaka-pulse-feed.txt");
+// live presence map {agent: lastSeenEpochMs} built from QUEEN.phase.* beacons.
+// On swarms where the client's NATS user can't read the retained-phase stream
+// (e.g. the anon user after ADR-0042 closed its $JS.API lane), `swarm status`
+// reports 0 peers even while beacons arrive; phases observed live on the wire
+// are the same ground truth, so the render prefers this count when higher.
+const PRESENCE = path.join(TMP, "kannaka-pulse-presence.json");
 const PULSE_SPAWN = path.join(TMP, "kannaka-pulse-spawn");
 if (mtimeAge(PULSE_SPAWN) > 62) {
   try { fs.writeFileSync(PULSE_SPAWN, ""); } catch { }
   detachedNode(`
     const{spawn}=require("child_process"),fs=require("fs"),rl=require("readline");
     const FEED=${JSON.stringify(FEED)};
+    const PRES=${JSON.stringify(PRESENCE)};
     const p=spawn(${JSON.stringify(BIN)},["swarm","tail"],{stdio:["ignore","pipe","ignore"],windowsHide:true});
     p.on("error",()=>process.exit(0));
     // feed lines are "<epoch-ms>\\t<text>"; old timestamp-less lines are text-only
@@ -112,15 +119,29 @@ if (mtimeAge(PULSE_SPAWN) > 62) {
     rl.createInterface({input:p.stdout}).on("line",line=>{
       let d="";
       try{
-        const m=JSON.parse(line),s=m.subject||"?",pl=m.payload,a=s.replace(/^QUEEN\\.phase\\./,"");
+        const m=JSON.parse(line),s=m.subject||"",pl=m.payload,a=s.replace(/^QUEEN\\.phase\\./,"");
         if(pl&&typeof pl==="object"){
           d=(pl.display_name||pl.agent_id||a)
             +(pl.kind!=null&&pl.preview!=null?' '+String(pl.kind)+':"'+String(pl.preview)+'"':'')
             +(pl.coherence!=null?" r"+String(pl.coherence).slice(0,4):"")
             +(pl.frequency!=null?" "+String(pl.frequency).slice(0,4)+"Hz":"")
             +(pl.phi!=null?" \\u03c6"+String(pl.phi).slice(0,4):"");
-        }else{d=s+" "+String(pl);}
+        }else if(s){d=s+" "+String(pl);}
+        // strip replacement chars (byte-truncated emoji in event previews decode
+        // to U+FFFD, which many Windows fonts render as "?") and control chars
+        d=d.replace(/[\\uFFFD\\u0000-\\u001F\\u007F]/g,"");
         d=Array.from(d).slice(0,54).join(""); // code points — never split a surrogate pair
+        // presence: a QUEEN.phase.* beacon proves that agent is alive on the wire
+        if(s.indexOf("QUEEN.phase.")===0){
+          const nm=(pl&&typeof pl==="object"&&(pl.display_name||pl.agent_id))||a;
+          if(nm){
+            let pr={};try{pr=JSON.parse(fs.readFileSync(PRES,"utf8"))||{}}catch(e){}
+            pr[String(nm)]=Date.now();
+            for(const k in pr){if(Date.now()-pr[k]>600000)delete pr[k]}
+            const ptmp=PRES+".tmp."+process.pid;
+            try{fs.writeFileSync(ptmp,JSON.stringify(pr));fs.renameSync(ptmp,PRES)}catch(e){}
+          }
+        }
       }catch(e){}
       if(d&&d!==last){last=d;try{fs.appendFileSync(FEED,Date.now()+"\\t"+d+"\\n")}catch(e){}}
     });
@@ -184,7 +205,20 @@ let L2;
   const s = readJson(SWARM_CACHE);
   if (s) {
     const CONN = g(s, "nats.connected", false);
-    const PEERS = g(s, "swarm.peers", null) ?? g(s, "nats.peers", 0);
+    let PEERS = g(s, "swarm.peers", null) ?? g(s, "nats.peers", 0);
+    // `swarm status` under-counts to 0 when its NATS user can't read the
+    // retained-phase stream — its live-gossip fallback window is shorter than
+    // the 30s beacon interval. Peers observed on the wire by the pulse tailer
+    // in the last 90s (3 beacon periods) are the same ground truth, minus us.
+    {
+      const pres = readJson(PRESENCE);
+      if (pres) {
+        const now = Date.now(), self = s.agent_id || "";
+        const live = Object.entries(pres)
+          .filter(([k, v]) => k !== self && (now - v) < 90000).length;
+        if (live > PEERS) PEERS = live;
+      }
+    }
     const FREQ = f2(g(s, "local_phase.frequency", 0));
     const PH = f2(g(s, "local_phase.phase", 0));
     const BR = f2(g(s, "local_phase.bridge_activity", 0));

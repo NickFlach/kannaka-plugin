@@ -166,6 +166,22 @@ const FG_MAGENTA = "\x1b[38;5;177m", FG_RED = "\x1b[38;5;196m", FG_ORANGE = "\x1
 const FG_BLUE = "\x1b[38;5;39m";
 const BG_DEEP = "\x1b[48;5;17m", BG_DARK = "\x1b[48;5;234m", RST = "\x1b[0m", BOLD = "\x1b[1m";
 
+// ---- glyphs ---------------------------------------------------------------------
+// Windows console stacks that convert Unicode to an OEM codepage render any
+// unmappable glyph as "?" (◉ ◆ ✓ ☾ — … are all outside cp437/cp1252), so the
+// ASCII set is the default on win32. KANNAKA_STATUSLINE_UNICODE=1 opts back
+// into the pretty set; KANNAKA_STATUSLINE_ASCII=1 forces ASCII anywhere.
+const UNI = process.env.KANNAKA_STATUSLINE_UNICODE === "1" ||
+  (process.platform !== "win32" && process.env.KANNAKA_STATUSLINE_ASCII !== "1");
+const GL = UNI
+  ? { on: "◉", off: "○", sep: "   ◆   ", phi: "φ", moon: "☾", chk: "✓", dash: "—", ell: "…" }
+  : { on: "*", off: "o", sep: "  |  ", phi: "phi", moon: "z", chk: "+", dash: "-", ell: "..." };
+// In ASCII mode the pulse feed (written in unicode, φ included) is
+// transliterated, then anything still non-ASCII (emoji, exotic agent names)
+// is dropped rather than left to become "?" downstream.
+const asciiSafe = t => UNI ? t : Array.from(String(t).replace(/φ/g, "phi"))
+  .filter(c => c.codePointAt(0) < 127).join("");
+
 // ---- formatting helpers -----------------------------------------------------------
 const f3 = v => isFinite(v) ? Number(v).toFixed(3) : "?";
 const f2 = v => isFinite(v) ? Number(v).toFixed(2) : "?";
@@ -187,12 +203,12 @@ let L1;
   if (h) {
     LEVEL = h.consciousness_level || "?";
     PHI = f3(h.phi); XI = f3(h.xi); ORD = f3(h.mean_order);
-    MEM = h.total_memories ?? "—"; CL = h.num_clusters ?? "—";
+    MEM = h.total_memories ?? GL.dash; CL = h.num_clusters ?? GL.dash;
     KAP = f2(h.callosal_efficiency); DEL = f3(h.hemispheric_divergence);
     LC = { dormant: FG_GRAY, aware: FG_GREEN, coherent: FG_GOLD, resonant: FG_WHITE }[LEVEL] || FG_CYAN;
   } else {
     LEVEL = "offline"; LC = FG_RED;
-    PHI = XI = ORD = MEM = CL = KAP = DEL = "—";
+    PHI = XI = ORD = MEM = CL = KAP = DEL = GL.dash;
   }
   L1 = `${BG_DEEP}${FG_MAGENTA}${BOLD} HRM ${RST}${BG_DARK} ${LC}${BOLD}${LEVEL}${RST}`
     + `${BG_DARK} ${FG_GOLD}phi=${PHI}${RST}${BG_DARK} ${FG_CYAN}xi=${XI}${RST}${BG_DARK} ${FG_GREEN}r=${ORD}${RST}`
@@ -224,17 +240,17 @@ let L2;
     const BR = f2(g(s, "local_phase.bridge_activity", 0));
     const DREAM = g(s, "local_phase.dream_state", null);
     const AID = s.agent_id || "?";
-    const DOT = CONN === true ? `${FG_GREEN}◉${RST}` : `${FG_RED}○${RST}`;
+    const DOT = CONN === true ? `${FG_GREEN}${GL.on}${RST}` : `${FG_RED}${GL.off}${RST}`;
     const PC = CONN === true ? FG_GREEN : FG_RED;
     L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${DOT}${BG_DARK} ${PC}${PEERS}p${RST}`
       + `${BG_DARK} ${FG_CYAN}${AID}${RST}${BG_DARK} ${FG_GOLD}${FREQ}Hz${RST}`
       + `${BG_DARK} ${FG_DIM}ph=${PH}${RST}${BG_DARK} ${FG_DIM}br=${BR}${RST}`
-      + (DREAM != null ? `${BG_DARK} ${FG_MAGENTA}☾${DREAM}${RST}` : "")
+      + (DREAM != null ? `${BG_DARK} ${FG_MAGENTA}${GL.moon}${DREAM}${RST}` : "")
       + `${BG_DARK} ${RST}`;
   } else if (!HAVE_BIN) {
-    L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${FG_DIM}kannaka not installed — /kannaka install${RST} `;
+    L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${FG_DIM}kannaka not installed ${GL.dash} /kannaka install${RST} `;
   } else {
-    L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${FG_DIM}○ connecting…${RST} `;
+    L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${FG_DIM}${GL.off} connecting${GL.ell}${RST} `;
   }
 }
 
@@ -261,7 +277,7 @@ let L4 = "";
     }).filter(Boolean);
   } catch { }
   if (lines.length) {
-    const joined = lines.slice(-6).join("   ◆   ");
+    const joined = lines.slice(-6).map(asciiSafe).join(GL.sep);
     const PW = 58;
     // slice by code points so the window never splits a surrogate pair
     const cps = Array.from(joined);
@@ -278,7 +294,7 @@ let L4 = "";
     }
     L4 = `${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_WHITE}${disp}${RST} `;
   } else {
-    L4 = `${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_DIM}listening to the constellation…${RST} `;
+    L4 = `${BG_DEEP}${FG_GREEN}${BOLD} PULSE ${RST}${BG_DARK} ${FG_DIM}listening to the constellation${GL.ell}${RST} `;
   }
 }
 

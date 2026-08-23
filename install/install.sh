@@ -14,12 +14,26 @@
 # Idempotent — safe to re-run. Run directly:
 #   curl -fsSL https://raw.githubusercontent.com/NickFlach/kannaka-plugin/master/install/install.sh | sh
 RELEASE_REPO="${KANNAKA_RELEASE_REPO:-NickFlach/kannaka-memory}"
+TUI_REPO="${KANNAKA_TUI_REPO:-NickFlach/kannaka-tui}"
+INSTALL_URL="https://raw.githubusercontent.com/NickFlach/kannaka-plugin/master/install/install.sh"
 WITH_CLAUDE=0
-for arg in "$@"; do
-  case "$arg" in
+SKIP_TUI=0
+# Constellation Pass credentials. Accepted as flags or environment so the
+# portal can hand a subscriber one line that works, and so a re-run without
+# them leaves an existing credential file untouched rather than blanking it.
+NATS_USER_ARG="${KANNAKA_NATS_USER:-}"
+NATS_PASS_ARG="${KANNAKA_NATS_PASSWORD:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
     --with-claude) WITH_CLAUDE=1 ;;
     --skip-statusline) SKIP_STATUSLINE=1 ;;
+    --skip-tui) SKIP_TUI=1 ;;
+    --nats-user) NATS_USER_ARG="${2:-}"; shift ;;
+    --nats-password) NATS_PASS_ARG="${2:-}"; shift ;;
+    --nats-user=*) NATS_USER_ARG="${1#*=}" ;;
+    --nats-password=*) NATS_PASS_ARG="${1#*=}" ;;
   esac
+  shift
 done
 
 say()  { printf '\033[36m▸\033[0m %s\n' "$1"; }
@@ -39,31 +53,57 @@ DEST="$HOME/.local/bin"; mkdir -p "$DEST"
 os=$(uname -s); arch=$(uname -m)
 case "$os" in Linux*) o=linux ;; Darwin*) o=macos ;; *) warn "unsupported OS: $os"; exit 1 ;; esac
 case "$arch" in x86_64|amd64) a=x86_64 ;; aarch64|arm64) a=aarch64 ;; *) warn "unsupported arch: $arch"; exit 1 ;; esac
-asset="kannaka-${o}-${a}"
 base="https://github.com/$RELEASE_REPO/releases/latest/download"
 
-say "Downloading kannaka ($asset)…"
-if ! curl -fSL "$base/$asset" -o "$DEST/kannaka"; then
-  warn "Failed to download $asset from $base — check your internet connection."
-  exit 1
-fi
-# The release always publishes a per-file .sha256 (Sigstore + checksums trust).
-# A MISSING checksum means we cannot verify — fail closed rather than install an
-# unverified binary. (Previously verification was nested in the download's `if`,
-# so a missing .sha256 silently skipped it and installed unverified.)
-if ! curl -fsSL "$base/$asset.sha256" -o "$DEST/.k.sha"; then
-  warn "checksum $asset.sha256 could not be downloaded — refusing to install an unverified binary"
-  rm -f "$DEST/kannaka" "$DEST/.k.sha"; exit 1
-fi
-want=$(awk '{print $1}' "$DEST/.k.sha"); rm -f "$DEST/.k.sha"
-[ -n "$want" ] || { warn "checksum $asset.sha256 was empty — refusing to install unverified"; rm -f "$DEST/kannaka"; exit 1; }
-if have sha256sum; then got=$(sha256sum "$DEST/kannaka" | awk '{print $1}')
-elif have shasum; then got=$(shasum -a 256 "$DEST/kannaka" | awk '{print $1}')
-else warn "no sha256 tool (sha256sum/shasum) available — cannot verify"; rm -f "$DEST/kannaka"; exit 1; fi
-[ "$want" = "$got" ] || { warn "kannaka sha256 mismatch (want $want got $got)"; rm -f "$DEST/kannaka"; exit 1; }
-say "sha256 verified"
-chmod +x "$DEST/kannaka"
-ok "kannaka binary installed → $DEST/kannaka"
+# Download one release asset and refuse to install it unverified.
+#
+# Was inline for the single binary; a second one (the TUI) made copying it the
+# obvious move and the wrong one — a checksum check that exists twice is a
+# checksum check that gets weakened once. Every failure path removes the
+# partial file, so a refused install never leaves something executable behind.
+#
+#   fetch_verified <repo> <asset-name> <destination-path> <label>
+fetch_verified() {
+  fv_repo="$1"; fv_asset="$2"; fv_dest="$3"; fv_label="$4"
+  fv_base="https://github.com/$fv_repo/releases/latest/download"
+  fv_sha="${fv_dest}.sha.tmp"
+
+  say "Downloading $fv_label ($fv_asset)…"
+  if ! curl -fSL "$fv_base/$fv_asset" -o "$fv_dest"; then
+    warn "Failed to download $fv_asset from $fv_base — check your internet connection."
+    rm -f "$fv_dest"; return 1
+  fi
+  # The release always publishes a per-file .sha256 (Sigstore + checksums
+  # trust). A MISSING checksum means we cannot verify — fail closed rather than
+  # install an unverified binary. (Verification used to be nested inside the
+  # download's `if`, so a missing .sha256 silently skipped it.)
+  if ! curl -fsSL "$fv_base/$fv_asset.sha256" -o "$fv_sha"; then
+    warn "checksum $fv_asset.sha256 could not be downloaded — refusing to install an unverified binary"
+    rm -f "$fv_dest" "$fv_sha"; return 1
+  fi
+  # Per-destination temp name: a shared one raced when two installs ran at once
+  # and would silently verify the wrong file against the wrong digest.
+  fv_want=$(awk '{print $1}' "$fv_sha"); rm -f "$fv_sha"
+  if [ -z "$fv_want" ]; then
+    warn "checksum $fv_asset.sha256 was empty — refusing to install unverified"
+    rm -f "$fv_dest"; return 1
+  fi
+  if have sha256sum; then fv_got=$(sha256sum "$fv_dest" | awk '{print $1}')
+  elif have shasum; then fv_got=$(shasum -a 256 "$fv_dest" | awk '{print $1}')
+  else
+    warn "no sha256 tool (sha256sum/shasum) available — cannot verify"
+    rm -f "$fv_dest"; return 1
+  fi
+  if [ "$fv_want" != "$fv_got" ]; then
+    warn "$fv_label sha256 mismatch (want $fv_want got $fv_got)"
+    rm -f "$fv_dest"; return 1
+  fi
+  say "sha256 verified"
+  chmod +x "$fv_dest"
+  ok "$fv_label installed → $fv_dest"
+}
+
+fetch_verified "$RELEASE_REPO" "kannaka-${o}-${a}" "$DEST/kannaka" "kannaka" || exit 1
 
 # ───────────────────────────────────────────────────────────────────────────
 # 2. PATH: make sure ~/.local/bin is reachable, or `kannaka` looks like it
@@ -93,6 +133,86 @@ if ver=$("$DEST/kannaka" --version 2>/dev/null | head -1); then
   [ -n "$ver" ] && ok "kannaka is working: $ver"
 else
   warn "kannaka installed but '--version' failed to run."
+fi
+
+# ───────────────────────────────────────────────────────────────────────────
+# 2b. THE DASHBOARD: kannaka-tui → ~/.local/bin
+#
+# Its own repo and its own releases since the binary was extracted at v0.5.12,
+# with the same asset naming, so it rides the same verified download. Not fatal
+# if it fails: the engine is the product and a missing dashboard must not cost
+# somebody a working install.
+#
+# (consciousness-core is deliberately NOT here. It is a LIBRARY — no [[bin]],
+# no main.rs — compiled into the kannaka binary above, so anyone who has
+# kannaka already has its physics. There is nothing separate to install.)
+# ───────────────────────────────────────────────────────────────────────────
+if [ "$SKIP_TUI" != "1" ]; then
+  set +e
+  fetch_verified "$TUI_REPO" "kannaka-tui-${o}-${a}" "$DEST/kannaka-tui" "kannaka-tui"
+  tui_rc=$?
+  set -e
+  [ "$tui_rc" -eq 0 ] || warn "kannaka-tui was not installed — the engine is fine; re-run to retry."
+fi
+
+# ───────────────────────────────────────────────────────────────────────────
+# 2c. CONSTELLATION PASS: authenticated swarm credentials.
+#
+# `kannaka swarm serve` and `listen --auto-sync` need an AUTHENTICATED NATS
+# connection; anonymous is read-only. The binary reads `NATS_USER` /
+# `NATS_PASSWORD` from the ENVIRONMENT (src/nats.rs, precedence: explicit >
+# env > url), and the documented home for them is ~/.kannaka-nats.env.
+#
+# Nothing ever put them in the environment for a person. The systemd units and
+# the auth cron `source` that file explicitly; an interactive shell never did.
+# So a subscriber could write their credentials in exactly the documented place
+# and still connect anonymously — paying for a tier their terminal could not
+# reach. Writing the file is only half the job; the shell has to load it.
+# ───────────────────────────────────────────────────────────────────────────
+CREDS="$HOME/.kannaka-nats.env"
+
+# Quote a value so that sourcing the file assigns it verbatim.
+#
+# This file is `.`-sourced by the user's shell, so an unquoted value is not a
+# string — it is SHELL INPUT. A generated password containing a space assigns
+# the first word and then RUNS the rest as a command; one containing `$(...)`
+# or a backtick is arbitrary execution out of a 0600 file the user was told to
+# trust. Single quotes disable every expansion, and the `'\''` dance is the
+# POSIX way to carry a literal single quote through them.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+if [ -n "$NATS_USER_ARG" ] && [ -n "$NATS_PASS_ARG" ]; then
+  # 0600 BEFORE the secret goes in, not after: created with a default umask the
+  # file is world-readable for the moment in between, which is the window that
+  # matters on a shared box.
+  ( umask 077; : > "$CREDS" )
+  printf '# Kannaka Constellation Pass — swarm credentials.\n# Written by the installer. Sourced by your shell rc; keep it 0600.\nexport NATS_USER=%s\nexport NATS_PASSWORD=%s\n' \
+    "$(shq "$NATS_USER_ARG")" "$(shq "$NATS_PASS_ARG")" > "$CREDS"
+  chmod 600 "$CREDS"
+  ok "Constellation Pass credentials written → $CREDS"
+elif [ -f "$CREDS" ]; then
+  say "Constellation Pass credentials already present → $CREDS"
+fi
+
+# Make an interactive shell actually load them. Guarded and idempotent, same
+# shape as the PATH block above, and pointed at the file rather than carrying
+# the secret itself — so rotating credentials is one file write and no rc edit.
+if [ -f "$CREDS" ]; then
+  crc=""
+  case "${SHELL:-}" in
+    *zsh)  crc="$HOME/.zshrc" ;;
+    *bash) crc="$HOME/.bashrc" ;;
+    *)     crc="$HOME/.profile" ;;
+  esac
+  [ -f "$crc" ] || crc="$HOME/.profile"
+  if ! grep -qs 'kannaka-nats.env' "$crc" 2>/dev/null; then
+    printf '\n# kannaka swarm credentials\n[ -f "$HOME/.kannaka-nats.env" ] && . "$HOME/.kannaka-nats.env"\n' >> "$crc"
+    say "Shell will load your swarm credentials from $crc — open a NEW terminal."
+  fi
+  # Load them for the rest of THIS run too, so the check below is about the
+  # credentials rather than about which terminal we happen to be in.
+  # shellcheck disable=SC1090
+  . "$CREDS" 2>/dev/null || true
 fi
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -137,3 +257,13 @@ fi
 
 printf '\n'
 ok "Done. kannaka → $DEST/kannaka"
+[ -x "$DEST/kannaka-tui" ] && ok "     kannaka-tui → $DEST/kannaka-tui"
+if [ -n "${NATS_USER:-}" ]; then
+  ok "     Constellation Pass: authenticated as $NATS_USER"
+else
+  printf '\n'
+  say "Swarm access is ANONYMOUS (read-only). A Constellation Pass unlocks"
+  say "'kannaka swarm serve' and 'listen --auto-sync'. With your pass credentials:"
+  say "    curl -fsSL $INSTALL_URL | sh -s -- --nats-user USER --nats-password PASS"
+  say "or write them to ~/.kannaka-nats.env and re-run this installer."
+fi

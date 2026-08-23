@@ -69,8 +69,70 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build .pkg
         run: bash install/macos/build-pkg.sh "${{ needs.version.outputs.version }}"
+
+      # Answers "do I have the RIGHT certificate" without cutting a release.
+      #
+      # Apple issues several kinds and only one signs a .pkg. "Developer ID
+      # Application" signs .app bundles and is the one people usually have to
+      # hand; productsign needs "Developer ID Installer". They look
+      # interchangeable in the developer portal and are not, so this names what
+      # the keychain actually contains rather than letting a release discover it.
+      #
+      # Deliberately stops before notarisation: that needs three more secrets
+      # and a round trip to Apple, and the mistake being hunted here happens
+      # earlier than that.
+      - name: Check the signing certificate (smoke test only)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_smoke_test && env.HAS_SIGN == 'true'
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          trap 'rm -f cert.p12' EXIT
+          echo "$CERT_B64" | base64 -d > cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+
+          echo "::group::identities in the keychain"
+          security find-identity -v build.keychain || true
+          echo "::endgroup::"
+
+          # `-v -p basic` lists identities usable for signing. The Installer
+          # identity is the one productsign will accept.
+          if security find-identity -v build.keychain | grep -q "Developer ID Installer:"; then
+            echo "::notice::found a 'Developer ID Installer' identity — this is the right kind for a .pkg"
+          else
+            echo "::error::no 'Developer ID Installer' identity in this .p12."
+            echo "::error::A 'Developer ID Application' certificate signs .app bundles and CANNOT sign a .pkg."
+            echo "::error::Create a Developer ID Installer certificate at developer.apple.com and export THAT as .p12."
+            exit 1
+          fi
+
+          if [ -n "$SIGN_ID" ]; then
+            if security find-identity -v build.keychain | grep -qF "$SIGN_ID"; then
+              echo "::notice::MACOS_SIGN_IDENTITY matches an identity in the keychain"
+            else
+              echo "::error::MACOS_SIGN_IDENTITY is set but does not match any identity above — copy the string verbatim, including the (TEAMID)"
+              exit 1
+            fi
+            productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg smoke.pkg
+          else
+            # Unset is fine at this stage: the cert is what was being checked,
+            # and productsign can find the sole Installer identity by name.
+            ID=$(security find-identity -v build.keychain | sed -n 's/.*"\(Developer ID Installer:[^"]*\)".*/\1/p' | head -1)
+            echo "::notice::MACOS_SIGN_IDENTITY is unset; set it to: $ID"
+            productsign --sign "$ID" kannaka-setup-macos.pkg smoke.pkg
+          fi
+
+          pkgutil --check-signature smoke.pkg
+          echo "::notice::smoke test: the .pkg was signed. Notarisation is NOT covered here."
+          rm -f smoke.pkg
+
       - name: Sign + notarize .pkg (only when cert secret is present)
-        if: env.HAS_SIGN == 'true'
+        if: env.HAS_SIGN == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.sign_smoke_test)
         env:
           CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           CERT_PW: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -117,7 +179,7 @@ jobs:
       # unstapled .pkg published under a release that claims to be signed is
       # exactly the silent success this repo keeps producing.
       - name: Verify the .pkg is signed and stapled
-        if: env.HAS_SIGN == 'true'
+        if: env.HAS_SIGN == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.sign_smoke_test)
         run: |
           pkgutil --check-signature kannaka-setup-macos.pkg
           # `stapler validate` is the one that proves Gatekeeper will pass

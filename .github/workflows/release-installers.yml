@@ -2,8 +2,18 @@ name: release-installers
 # Builds native installers on each release tag (v*) and attaches them as assets.
 # Each wraps the shared install engine (install/install.{sh,ps1}); the engine
 # does the per-user work (binary + Claude Code plugin + statusline + swarm MCP).
-# NOTE: assets are UNSIGNED until signing certs are wired (Authenticode for .msi,
-# Apple Developer ID for .pkg) — until then OS SmartScreen/Gatekeeper will warn.
+# SIGNING STATUS
+#   macOS  .pkg — SIGNED, notarised and stapled since v1.4.3. Gatekeeper passes.
+#   Linux  .deb — not OS-code-signed by design; apt trust is repo-level GPG.
+#   Windows .msi — UNSIGNED, deliberately. A new Authenticode certificate can no
+#     longer be issued as a .pfx (CA/Browser Forum, June 2023: keys must sit on
+#     certified hardware), so the .pfx step below only serves a pre-2023
+#     certificate; a cloud-HSM route needs its vendor's own signing action. And
+#     a fresh certificate does not silence SmartScreen anyway — reputation
+#     accrues over downloads. See install/SIGNING.md for the decision.
+#
+# Layer 1 covers all three regardless: SHA256SUMS.txt plus a Sigstore keyless
+# signature per artifact, requiring no certificates at all.
 on:
   push:
     tags: ["v*"]

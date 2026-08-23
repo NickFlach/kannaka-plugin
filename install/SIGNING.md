@@ -136,8 +136,49 @@ installer under a release that claims to be signed.
 
 ### Windows (.msi — Authenticode)
 
-You need an **Authenticode code-signing certificate** (`.pfx`/`.p12`) from a CA
-(DigiCert, Sectigo, SSL.com, …) or an EV token export.
+> **Status: deliberately not done.** The `.msi` ships unsigned, and that is a
+> decision rather than an omission — see *Why Windows is unsigned* below before
+> spending anything.
+
+#### What changed, and why the instructions below may not apply to you
+
+Since the CA/Browser Forum tightened its baseline requirements in **June 2023**,
+the private key for a new code-signing certificate must live on certified
+hardware — a USB token, or a CA-operated cloud HSM. **You can no longer be
+issued a plain `.pfx` for a new OV certificate**, which is what the workflow's
+existing signing step consumes.
+
+That leaves three shapes:
+
+| Route | Fits CI? | Notes |
+|---|---|---|
+| USB hardware token | ✗ | Nothing is plugged into a GitHub-hosted runner. Needs a self-hosted runner with the token attached. |
+| Cloud HSM signing (Azure Trusted Signing, SSL.com eSigner, DigiCert KeyLocker) | ✓ | The CA holds the key; you call their tool. Each needs a **different** signing step than the one in this workflow. |
+| A `.pfx` issued **before** June 2023 | ✓ | Still works with the step below, until it expires. |
+
+If you go the cloud route, the `WINDOWS_CERT_PFX_BASE64` path is not what you
+want — the signing step has to be replaced with that vendor's action or CLI.
+Azure Trusted Signing is much the cheapest but normally wants ~3 years of
+verifiable business history for organisation Public Trust; SSL.com eSigner has
+fewer qualifying hoops at higher cost.
+
+#### Why Windows is unsigned
+
+A paid OV certificate **does not** immediately silence SmartScreen. Reputation
+accrues per-publisher over downloads, so a freshly-issued certificate can still
+produce "Windows protected your PC" for weeks. The spend buys an eventual
+outcome, not an immediate one — and at this download volume that outcome arrives
+slowly.
+
+Meanwhile Layer 1 already gives anyone who cares a way to verify the download
+completely: `SHA256SUMS.txt` plus a Sigstore signature tied to this repository's
+release workflow. That is stronger evidence of provenance than Authenticode
+provides; it is simply not evidence the *operating system* consults.
+
+Revisit when download volume makes the warning a real cost, or when Azure
+Trusted Signing eligibility comes through.
+
+#### If you do have a pre-2023 `.pfx`
 
 ```bash
 # 1. base64-encode the .pfx (one line, no wrapping)

@@ -155,6 +155,39 @@ rm cert.b64
 
 ### macOS (.pkg — Developer ID Installer + notarization)
 
+> **The trap, first.** Apple issues several certificate types and only one signs
+> a `.pkg`:
+>
+> | Certificate | Signs | Use here |
+> |---|---|---|
+> | **Developer ID Installer** | `.pkg` installers | ✅ this one |
+> | Developer ID Application | `.app` bundles | ✗ cannot sign a `.pkg` |
+> | Apple Development / Distribution | App Store builds | ✗ |
+>
+> They sit next to each other in the developer portal and are easy to mix up.
+> On a Mac, check what you actually hold:
+>
+> ```bash
+> security find-identity -v | grep "Developer ID"
+> ```
+>
+> The line you want reads `Developer ID Installer: Your Name (TEAMID)` — that
+> whole quoted string, including the team id in brackets, is `MACOS_SIGN_IDENTITY`,
+> and the ten characters in the brackets are `MACOS_NOTARY_TEAM_ID`.
+>
+> Once `MACOS_CERT_P12_BASE64` and `MACOS_CERT_PASSWORD` are set you can have CI
+> tell you, without cutting a release:
+>
+> ```bash
+> gh workflow run release-installers.yml --repo NickFlach/kannaka-plugin \
+>   -f sign_smoke_test=true
+> ```
+>
+> It imports the `.p12`, prints every identity it contains, fails loudly if
+> there is no Installer identity, and signs a throwaway copy of the `.pkg` to
+> prove `productsign` accepts it. It deliberately stops before notarisation —
+> that needs three more secrets, and the mistake being hunted happens earlier.
+
 You need: a **"Developer ID Installer"** certificate exported as `.p12`, and an
 **app-specific password** for `notarytool` (appleid.apple.com → Sign-In and Security).
 

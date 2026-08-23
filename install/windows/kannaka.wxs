@@ -1,10 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Per-user MSI (no admin) that lays down install.ps1 and runs it post-install
      in the user's context. Wraps install/install.ps1 (the shared engine). -->
+<!-- Version comes from the release tag: `wix build -d Version=1.4.2`.
+     It was hardcoded, and the .deb and .pkg builds both already took theirs
+     from `${GITHUB_REF_NAME#v}` — only the msi did not, so every msi built
+     since has claimed to BE 1.3.0 whatever it was tagged.
+
+     Not cosmetic. Windows Installer decides upgrades on ProductVersion, so
+     MajorUpgrade below could never fire: a newer msi looked like the version
+     already present and refused to upgrade. The msi could install once and
+     then never move.
+
+     The fallback keeps a bare `wix build` working for local checks; a release
+     always passes -d, so 0.0.0 in the wild means the workflow stopped doing
+     so and is meant to be conspicuous. -->
+<?ifndef Version?>
+  <?define Version = "0.0.0" ?>
+<?endif?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package Name="Kannaka Setup"
            Manufacturer="Nick Flach"
-           Version="1.3.0"
+           Version="$(Version)"
            UpgradeCode="7E9C2A14-3B6D-4F8E-9A21-5C0D8F1B2E33"
            Scope="perUser"
            Compressed="yes">
@@ -13,6 +29,9 @@
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLFOLDER" Name="Kannaka">
+        <!-- The script is laid down verbatim, BOM included. That matters: the
+             custom action runs it through `powershell.exe -File`, which is
+             Windows PowerShell 5.1, which reads a BOM-less file as ANSI. -->
         <Component Id="InstallScript" Guid="A1B2C3D4-1111-2222-3333-444455556666">
           <File Id="install_ps1" Source="install\install.ps1" KeyPath="yes" />
         </Component>
@@ -23,13 +42,26 @@
       <ComponentRef Id="InstallScript" />
     </Feature>
 
-    <!-- Run the engine as the installing user after files land. -->
+    <!-- Run the engine as the installing user after files land.
+
+         Return="check", not "ignore". The engine IS the install — this package
+         lays down one script and runs it, so an engine that failed means
+         nothing was installed. With "ignore" the MSI reported success anyway,
+         and that combination had teeth: install.ps1 shipped without a UTF-8
+         BOM, `powershell.exe -File` (Windows PowerShell 5.1) read it as ANSI,
+         and the non-ASCII in it produced eight syntax errors. So the script
+         never ran, the custom action's failure was discarded, and the installer
+         told the user it had succeeded while installing no binary at all.
+
+         The BOM is fixed. This is the half that would have SHOWN it: a
+         silent-by-design failure path is how that survived to a shipped
+         release. An installer that cannot do its one job should say so. -->
     <CustomAction Id="RunKannakaInstall"
                   Directory="INSTALLFOLDER"
                   ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install.ps1&quot;"
                   Execute="deferred"
                   Impersonate="yes"
-                  Return="ignore" />
+                  Return="check" />
     <InstallExecuteSequence>
       <Custom Action="RunKannakaInstall" After="InstallFiles" Condition="NOT Installed" />
     </InstallExecuteSequence>

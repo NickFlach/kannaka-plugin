@@ -73,7 +73,22 @@ jobs:
         run: dotnet tool install --global wix --version 5.0.2
       - name: Build .msi
         shell: pwsh
-        run: wix build install/windows/kannaka.wxs -o kannaka-setup-windows.msi
+        # Version from the tag, as the .deb and .pkg builds above already do.
+        # It used to be hardcoded in the .wxs, so every msi claimed 1.3.0 no
+        # matter what it was tagged — and because Windows Installer decides
+        # upgrades on ProductVersion, MajorUpgrade could never fire and the msi
+        # could not upgrade itself.
+        #
+        # workflow_dispatch has no tag, so `${GITHUB_REF_NAME}` is a branch
+        # name there; a manual build gets 0.0.0 rather than a version derived
+        # from whatever the branch happens to be called.
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v',''
+          if ($v -notmatch '^\d+\.\d+(\.\d+)?$') {
+            Write-Host "::notice::ref '${{ github.ref_name }}' is not a version tag — building 0.0.0"
+            $v = "0.0.0"
+          }
+          wix build install/windows/kannaka.wxs -d Version="$v" -o kannaka-setup-windows.msi
       - name: Sign .msi (Authenticode, only when cert secret is present)
         if: env.HAS_SIGN == 'true'
         shell: pwsh

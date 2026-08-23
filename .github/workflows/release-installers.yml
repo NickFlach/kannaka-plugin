@@ -13,12 +13,40 @@ permissions:
   contents: write
 
 jobs:
+  # One answer to "what version is this", for all three packagers.
+  #
+  # Each derived it independently and they disagreed in ways that only showed
+  # up one platform at a time: .deb and .pkg took `${GITHUB_REF_NAME#v}` raw
+  # while the .msi ignored the ref entirely and used a version hardcoded in its
+  # .wxs, so every msi claimed 1.3.0 and — because Windows Installer decides
+  # upgrades on ProductVersion — could never upgrade itself.
+  #
+  # The raw ref was its own bug. On workflow_dispatch there is no tag, so the
+  # ref is a BRANCH name: `.deb` builds have always died on
+  # `'0.0.0+fix/my-branch': invalid character in version number`, which meant
+  # the installers could not be test-built by hand at all — the exact thing
+  # needed to check a packaging change before tagging.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::notice::ref '${GITHUB_REF_NAME}' is not a version tag — building 0.0.0"
+            v="0.0.0"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
   linux-deb:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Build .deb
-        run: bash install/linux/build-deb.sh "${GITHUB_REF_NAME#v}"
+        run: bash install/linux/build-deb.sh "${{ needs.version.outputs.version }}"
       - uses: actions/upload-artifact@v4
         with: { name: kannaka-setup-linux-deb, path: kannaka-setup-linux.deb }
       - uses: softprops/action-gh-release@v2
@@ -26,6 +54,7 @@ jobs:
         with: { files: kannaka-setup-linux.deb }
 
   macos-pkg:
+    needs: version
     runs-on: macos-latest
     # HAS_SIGN flips to 'true' automatically once MACOS_CERT_P12_BASE64 is set
     # in repo secrets — then the pkg is signed + notarized. See install/SIGNING.md.
@@ -34,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build .pkg
-        run: bash install/macos/build-pkg.sh "${GITHUB_REF_NAME#v}"
+        run: bash install/macos/build-pkg.sh "${{ needs.version.outputs.version }}"
       - name: Sign + notarize .pkg (only when cert secret is present)
         if: env.HAS_SIGN == 'true'
         env:
@@ -62,6 +91,7 @@ jobs:
         with: { files: kannaka-setup-macos.pkg }
 
   windows-msi:
+    needs: version
     runs-on: windows-latest
     # HAS_SIGN flips to 'true' automatically once WINDOWS_CERT_PFX_BASE64 is set
     # in repo secrets — then the msi is Authenticode-signed. See install/SIGNING.md.
@@ -73,22 +103,8 @@ jobs:
         run: dotnet tool install --global wix --version 5.0.2
       - name: Build .msi
         shell: pwsh
-        # Version from the tag, as the .deb and .pkg builds above already do.
-        # It used to be hardcoded in the .wxs, so every msi claimed 1.3.0 no
-        # matter what it was tagged — and because Windows Installer decides
-        # upgrades on ProductVersion, MajorUpgrade could never fire and the msi
-        # could not upgrade itself.
-        #
-        # workflow_dispatch has no tag, so `${GITHUB_REF_NAME}` is a branch
-        # name there; a manual build gets 0.0.0 rather than a version derived
-        # from whatever the branch happens to be called.
-        run: |
-          $v = "${{ github.ref_name }}" -replace '^v',''
-          if ($v -notmatch '^\d+\.\d+(\.\d+)?$') {
-            Write-Host "::notice::ref '${{ github.ref_name }}' is not a version tag — building 0.0.0"
-            $v = "0.0.0"
-          }
-          wix build install/windows/kannaka.wxs -d Version="$v" -o kannaka-setup-windows.msi
+        # Version passed in, not hardcoded in the .wxs — see the `version` job.
+        run: wix build install/windows/kannaka.wxs -d Version="${{ needs.version.outputs.version }}" -o kannaka-setup-windows.msi
       - name: Sign .msi (Authenticode, only when cert secret is present)
         if: env.HAS_SIGN == 'true'
         shell: pwsh

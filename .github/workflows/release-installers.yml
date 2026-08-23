@@ -246,6 +246,52 @@ jobs:
           productsign --sign "$ID" kannaka-setup-macos.pkg signed.pkg
           mv signed.pkg kannaka-setup-macos.pkg
 
+          # Preflight the three notarisation credentials BEFORE uploading a
+          # package. `notarytool history` is a cheap read-only call that fails
+          # the same way a submission would, so a bad credential costs seconds
+          # instead of an upload — and, more to the point, gets diagnosed rather
+          # than reported as Apple's "Invalid or inaccessible developer team ID",
+          # which names one of three values while blaming a fourth thing.
+          #
+          # Trimmed first. A secret pasted into a web form carries whatever
+          # whitespace came with it, and every credential problem in this
+          # workflow so far has been a transcription artefact rather than a
+          # wrong value.
+          AC_APPLE_ID=$(printf '%s' "$AC_APPLE_ID" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          AC_TEAM_ID=$(printf '%s' "$AC_TEAM_ID"   | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          AC_PASSWORD=$(printf '%s' "$AC_PASSWORD" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+          # Shapes are checkable without revealing anything: GitHub masks the
+          # values, so a message quoting one prints *** and helps nobody.
+          bad=0
+          case "$AC_APPLE_ID" in
+            *@*.*) : ;;
+            *) echo "::error::MACOS_NOTARY_APPLE_ID does not look like an email address (${#AC_APPLE_ID} chars)"; bad=1 ;;
+          esac
+          if ! printf '%s' "$AC_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$'; then
+            echo "::error::MACOS_NOTARY_TEAM_ID should be exactly 10 upper-case alphanumerics (got ${#AC_TEAM_ID} chars) — for this certificate it is the code inside the identity name"
+            bad=1
+          fi
+          # App-specific passwords are always xxxx-xxxx-xxxx-xxxx, lower case.
+          # This is the single most diagnostic check available: an Apple ID
+          # password or a copied cert password cannot match it.
+          if ! printf '%s' "$AC_PASSWORD" | grep -Eq '^[a-z]{4}-[a-z]{4}-[a-z]{4}-[a-z]{4}$'; then
+            echo "::error::MACOS_NOTARY_PASSWORD is not shaped like an app-specific password (${#AC_PASSWORD} chars; expected 19, as abcd-efgh-ijkl-mnop)"
+            echo "::error::Generate one at appleid.apple.com → Sign-In and Security → App-Specific Passwords. It is not your Apple ID password and not the .p12 password."
+            bad=1
+          fi
+          [ "$bad" -eq 0 ] || exit 1
+
+          echo "credential shapes look right; asking Apple whether they work together…"
+          if ! xcrun notarytool history --apple-id "$AC_APPLE_ID" --team-id "$AC_TEAM_ID" --password "$AC_PASSWORD" >/dev/null 2>preflight.err; then
+            cat preflight.err
+            echo "::error::Apple rejected these credentials before any upload was attempted."
+            echo "::error::The same three values are what 'xcrun notarytool history' takes locally — if that works on your Mac,"
+            echo "::error::then a secret differs from what you typed there (whitespace, or a password generated under a different Apple ID)."
+            exit 1
+          fi
+          echo "::notice::notarisation credentials accepted by Apple"
+
           # `notarytool submit --wait` returns success for a submission that was
           # ACCEPTED for processing and then REJECTED, in some versions — so the
           # status is read back rather than inferred from the exit code. This is

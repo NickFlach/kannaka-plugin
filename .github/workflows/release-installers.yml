@@ -268,8 +268,15 @@ jobs:
             *@*.*) : ;;
             *) echo "::error::MACOS_NOTARY_APPLE_ID does not look like an email address (${#AC_APPLE_ID} chars)"; bad=1 ;;
           esac
+          # Apple team ids are ALWAYS upper-case alphanumerics, so a lower-case
+          # one is a transcription slip and not a different team — upper-casing
+          # it is a correction, not a guess. Apple compares case-sensitively and
+          # answers a lower-case id with "Invalid or inaccessible developer team
+          # ID for the provided Apple ID", which reads as a permissions problem
+          # and sends people to check their account membership instead.
+          AC_TEAM_ID=$(printf '%s' "$AC_TEAM_ID" | tr '[:lower:]' '[:upper:]')
           if ! printf '%s' "$AC_TEAM_ID" | grep -Eq '^[A-Z0-9]{10}$'; then
-            echo "::error::MACOS_NOTARY_TEAM_ID should be exactly 10 upper-case alphanumerics (got ${#AC_TEAM_ID} chars) — for this certificate it is the code inside the identity name"
+            echo "::error::MACOS_NOTARY_TEAM_ID should be exactly 10 alphanumerics (got ${#AC_TEAM_ID} chars) — for this certificate it is the code inside the identity name"
             bad=1
           fi
           # App-specific passwords are always xxxx-xxxx-xxxx-xxxx, lower case.

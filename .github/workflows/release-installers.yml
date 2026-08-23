@@ -165,21 +165,37 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$SIGN_ID" ]; then
-            if security find-identity -v build.keychain | grep -qF "$SIGN_ID"; then
-              echo "::notice::MACOS_SIGN_IDENTITY matches an identity in the keychain"
-            else
-              echo "::error::MACOS_SIGN_IDENTITY is set but does not match any identity above — copy the string verbatim, including the (TEAMID)"
-              exit 1
-            fi
-            productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg smoke.pkg
+          # The identity is READ FROM THE KEYCHAIN, not transcribed.
+          #
+          # This used to demand that MACOS_SIGN_IDENTITY match a 52-character
+          # string character for character, and failed when it did not. That is
+          # a failure mode invented for no reason: the certificate already
+          # carries its own name, there is one Installer identity in the .p12,
+          # and `security` will say what it is. Asking an operator to retype it —
+          # with the brackets, without the quotes find-identity prints around
+          # it, without a trailing newline a web form will never show them —
+          # buys nothing and cost two rounds.
+          #
+          # MACOS_SIGN_IDENTITY survives as an OVERRIDE for a keychain holding
+          # several Installer identities, trimmed before use because invisible
+          # whitespace is exactly what goes wrong.
+          DERIVED=$(security find-identity -v build.keychain | sed -n 's/.*"\(Developer ID Installer:[^"]*\)".*/\1/p' | head -1)
+          TRIMMED=$(printf '%s' "$SIGN_ID" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')
+          if [ -n "$TRIMMED" ] && security find-identity -v build.keychain | grep -qF "$TRIMMED"; then
+            ID="$TRIMMED"
+            echo "::notice::using MACOS_SIGN_IDENTITY (it matches the keychain)"
+          elif [ -n "$TRIMMED" ]; then
+            # Lengths compare without printing either value: GitHub masks the
+            # secret, and a masked string tells nobody anything.
+            echo "::warning::MACOS_SIGN_IDENTITY does not match the keychain (set: ${#TRIMMED} chars, keychain: ${#DERIVED} chars) — using the keychain's own value"
+            echo "::warning::that secret can simply be DELETED; it is only needed when a keychain holds several Installer identities"
+            ID="$DERIVED"
           else
-            # Unset is fine at this stage: the cert is what was being checked,
-            # and productsign can find the sole Installer identity by name.
-            ID=$(security find-identity -v build.keychain | sed -n 's/.*"\(Developer ID Installer:[^"]*\)".*/\1/p' | head -1)
-            echo "::notice::MACOS_SIGN_IDENTITY is unset; set it to: $ID"
-            productsign --sign "$ID" kannaka-setup-macos.pkg smoke.pkg
+            ID="$DERIVED"
+            echo "::notice::MACOS_SIGN_IDENTITY unset — using the identity found in the .p12"
           fi
+          [ -n "$ID" ] || { echo "::error::no Developer ID Installer identity to sign with"; exit 1; }
+          productsign --sign "$ID" kannaka-setup-macos.pkg smoke.pkg
 
           pkgutil --check-signature smoke.pkg
           echo "::notice::smoke test: the .pkg was signed. Notarisation is NOT covered here."
@@ -210,7 +226,24 @@ jobs:
           security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign
           security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
 
-          productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg signed.pkg
+          # Read from the keychain, exactly as the smoke test does — a RELEASE
+          # must not be able to fail on a transcription error in a string the
+          # certificate already carries. MACOS_SIGN_IDENTITY is an override for
+          # a keychain holding several Installer identities, trimmed before use.
+          DERIVED=$(security find-identity -v build.keychain | sed -n 's/.*"\(Developer ID Installer:[^"]*\)".*/\1/p' | head -1)
+          TRIMMED=$(printf '%s' "$SIGN_ID" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')
+          if [ -n "$TRIMMED" ] && security find-identity -v build.keychain | grep -qF "$TRIMMED"; then
+            ID="$TRIMMED"
+          else
+            [ -n "$TRIMMED" ] && echo "::warning::MACOS_SIGN_IDENTITY does not match the keychain — using the identity from the .p12"
+            ID="$DERIVED"
+          fi
+          if [ -z "$ID" ]; then
+            echo "::error::no 'Developer ID Installer' identity in this .p12 — a 'Developer ID Application' certificate cannot sign a .pkg"
+            exit 1
+          fi
+          echo "signing as: $ID"
+          productsign --sign "$ID" kannaka-setup-macos.pkg signed.pkg
           mv signed.pkg kannaka-setup-macos.pkg
 
           # `notarytool submit --wait` returns success for a submission that was

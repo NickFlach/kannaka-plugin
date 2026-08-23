@@ -113,24 +113,41 @@ jobs:
           fi
           echo "header looks like DER PKCS#12 (0x${HDR})"
 
-          # Now separate the two causes. openssl can open the container with the
-          # password without involving the keychain, so a failure HERE is the
-          # password and a success means the password is right and something
-          # about the keychain import is at fault instead.
+          # ADVISORY ONLY — deliberately not a gate.
+          #
+          # Keychain Access exports PKCS#12 with legacy algorithms (RC2-40, a
+          # SHA-1 MAC). OpenSSL 3 refuses those unless the legacy provider is
+          # loaded, and this runner's `openssl` is Homebrew's 3.x. So openssl
+          # failing here says nothing about the password — it is a WEAKER reader
+          # than the one that matters. Gating on it blamed the operator for a
+          # limitation of the checking tool, and cost a round trip doing so.
+          echo "openssl: $(command -v openssl) — $(openssl version 2>/dev/null)"
           if openssl pkcs12 -in cert.p12 -passin pass:"$CERT_PW" -noout -legacy 2>/dev/null \
              || openssl pkcs12 -in cert.p12 -passin pass:"$CERT_PW" -noout 2>/dev/null; then
-            echo "::notice::the export password opens this .p12 — the file and password are both good"
+            echo "openssl opened the .p12 with this password"
           else
-            echo "::error::the .p12 decoded correctly (${SZ} bytes, valid DER) but MACOS_CERT_PASSWORD does not open it."
-            echo "::error::That is the password you typed TWICE into Keychain Access's 'protect the exported items' dialog —"
-            echo "::error::not your Mac login password, and not your Apple ID. Re-export with a known password if unsure."
-            exit 1
+            echo "openssl could not open it — INCONCLUSIVE here (legacy PKCS#12 vs OpenSSL 3); security import decides"
           fi
 
           security create-keychain -p actions build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p actions build.keychain
-          security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign
+
+          # THE authority. macOS's own importer reads legacy PKCS#12 natively,
+          # so a MAC failure here — with the file already proven to be valid DER
+          # of a sane size — really is the password.
+          if ! security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign 2>import.err; then
+            cat import.err
+            if grep -qi "MAC verification failed\|wrong password" import.err; then
+              echo "::error::MACOS_CERT_PASSWORD does not open this .p12 (the file itself is fine: ${SZ} bytes, valid DER)."
+              echo "::error::It is the password from Keychain Access's 'protect the exported items' dialog, typed twice —"
+              echo "::error::not your Mac login password and not your Apple ID."
+              echo "::error::Verify locally first:  openssl pkcs12 -legacy -in yourcert.p12 -noout -passin pass:'THEPASSWORD'"
+            else
+              echo "::error::security import failed for a reason other than the password — see above."
+            fi
+            exit 1
+          fi
           security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
 
           echo "::group::identities in the keychain"

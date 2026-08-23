@@ -98,6 +98,42 @@ come out signed (+ notarized on macOS).
 > The `.deb` is **not** OS-code-signed — Linux trust is repo-level GPG (apt), not
 > per-file. Layer-1 checksum + Sigstore signature still cover it.
 
+### First: prove the plumbing without buying anything
+
+The signing steps had never executed — they were written, wired, and inert. Every
+other never-executed path in this repo turned out to be broken the first time it
+ran, and finding that out on the release *after* a certificate purchase is the
+expensive way round.
+
+So there is a smoke test. It forges a throwaway self-signed certificate, pushes
+it through the **same** signing step the real secrets use, and asserts a
+signature came out:
+
+```bash
+gh workflow run release-installers.yml --repo NickFlach/kannaka-plugin \
+  -f sign_smoke_test=true
+```
+
+It publishes nothing. What it proves is everything except trust: that the base64
+decode works, that `signtool.exe` is found (newest SDK, x64), that the sign
+invocation is well-formed, and that the verify step can tell a signed artifact
+from an unsigned one.
+
+It also asserts the **failure**: a self-signed certificate must NOT report
+`Valid`, because a check that passes for a worthless certificate is not checking
+anything. A green run looks like this:
+
+```
+signtool: C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe
+Successfully signed: kannaka-setup-windows.msi
+status: UnknownError  signer: CN=Kannaka Smoke Test
+notice: smoke test: the msi was signed and the untrusted chain was correctly rejected
+```
+
+With a real certificate the only thing that changes is `status: Valid`. If it is
+anything else, the build now **fails** rather than publishing an unsigned
+installer under a release that claims to be signed.
+
 ### Windows (.msi — Authenticode)
 
 You need an **Authenticode code-signing certificate** (`.pfx`/`.p12`) from a CA

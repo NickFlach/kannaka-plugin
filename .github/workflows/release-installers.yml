@@ -8,6 +8,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sign_smoke_test:
+        description: 'Prove the signing plumbing with a throwaway self-signed cert (never publishes)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -74,16 +79,51 @@ jobs:
           AC_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
           AC_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
         run: |
+          # The p12 is removed on EVERY exit, not only a successful one — a
+          # failed notarisation must not leave a decrypted certificate in the
+          # workspace beside the artifact.
+          trap 'rm -f cert.p12' EXIT
+
+          # `base64 -d` rather than BSD's `-D`: macOS has accepted the GNU
+          # spelling for years and it is the one SIGNING.md tells people to use
+          # when they encode.
           echo "$CERT_B64" | base64 -d > cert.p12
           security create-keychain -p actions build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p actions build.keychain
           security import cert.p12 -k build.keychain -P "$CERT_PW" -T /usr/bin/productsign
           security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
-          productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg signed.pkg && mv signed.pkg kannaka-setup-macos.pkg
-          xcrun notarytool submit kannaka-setup-macos.pkg --apple-id "$AC_APPLE_ID" --team-id "$AC_TEAM_ID" --password "$AC_PASSWORD" --wait
+
+          productsign --sign "$SIGN_ID" kannaka-setup-macos.pkg signed.pkg
+          mv signed.pkg kannaka-setup-macos.pkg
+
+          # `notarytool submit --wait` returns success for a submission that was
+          # ACCEPTED for processing and then REJECTED, in some versions — so the
+          # status is read back rather than inferred from the exit code. This is
+          # the same class of mistake as trusting a custom action's Return code.
+          xcrun notarytool submit kannaka-setup-macos.pkg \
+            --apple-id "$AC_APPLE_ID" --team-id "$AC_TEAM_ID" --password "$AC_PASSWORD" \
+            --wait --output-format json > notary.json
+          cat notary.json
+          status=$(python3 -c 'import json,sys;print(json.load(open("notary.json")).get("status",""))')
+          if [ "$status" != "Accepted" ]; then
+            echo "::error::notarisation status was '$status', not Accepted"
+            exit 1
+          fi
+
           xcrun stapler staple kannaka-setup-macos.pkg
-          rm -f cert.p12
+
+      # The half that was missing, matching the Windows verify. An unsigned or
+      # unstapled .pkg published under a release that claims to be signed is
+      # exactly the silent success this repo keeps producing.
+      - name: Verify the .pkg is signed and stapled
+        if: env.HAS_SIGN == 'true'
+        run: |
+          pkgutil --check-signature kannaka-setup-macos.pkg
+          # `stapler validate` is the one that proves Gatekeeper will pass
+          # OFFLINE. Without a stapled ticket a notarised package still prompts
+          # on a machine that cannot reach Apple.
+          xcrun stapler validate kannaka-setup-macos.pkg
       - uses: actions/upload-artifact@v4
         with: { name: kannaka-setup-macos-pkg, path: kannaka-setup-macos.pkg }
       - uses: softprops/action-gh-release@v2
@@ -105,18 +145,96 @@ jobs:
         shell: pwsh
         # Version passed in, not hardcoded in the .wxs — see the `version` job.
         run: wix build install/windows/kannaka.wxs -d Version="${{ needs.version.outputs.version }}" -o kannaka-setup-windows.msi
-      - name: Sign .msi (Authenticode, only when cert secret is present)
-        if: env.HAS_SIGN == 'true'
+      # A self-signed certificate, ONLY for `workflow_dispatch` with
+      # sign_smoke_test=true. It proves the plumbing — decode a pfx, find
+      # signtool, sign, verify a signature is present — without anyone buying a
+      # certificate first. It is worthless as trust and deliberately so: the
+      # verify step below separates "is signed" from "chains to a trusted root",
+      # and a smoke-test artifact passes the first and fails the second.
+      #
+      # This exists because every other never-executed path in this repo turned
+      # out to be broken the first time it ran. Finding that out on the release
+      # that follows a cert purchase is the expensive way.
+      - name: Forge a throwaway signing cert (smoke test only)
+        if: github.event_name == 'workflow_dispatch' && inputs.sign_smoke_test
+        shell: pwsh
+        run: |
+          $c = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Kannaka Smoke Test" `
+                 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(1)
+          $pw = ConvertTo-SecureString -String "smoke" -Force -AsPlainText
+          Export-PfxCertificate -Cert $c -FilePath smoke.pfx -Password $pw | Out-Null
+          $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("smoke.pfx"))
+          # Through the same env vars the real secrets use, so the signing step
+          # below is byte-identical in both modes rather than branching.
+          "PFX_B64=$b64"  | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PFX_PW=smoke"  | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "DO_SIGN=true"  | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "SMOKE=true"    | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Remove-Item smoke.pfx
+
+      - name: Decide whether to sign
+        shell: pwsh
+        run: |
+          if ($env:DO_SIGN -ne 'true' -and $env:HAS_SIGN -eq 'true') {
+            "DO_SIGN=true" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          }
+
+      - name: Sign .msi (Authenticode)
+        if: env.DO_SIGN == 'true'
         shell: pwsh
         env:
-          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          PFX_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          # Empty in smoke mode; the forge step put the throwaway pair in
+          # GITHUB_ENV, and a step's `env:` does not override that.
+          REAL_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          REAL_PFX_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          [IO.File]::WriteAllBytes("$PWD\cert.pfx", [Convert]::FromBase64String($env:PFX_B64))
-          $st = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
-                Where-Object FullName -like "*x64*" | Select-Object -ExpandProperty FullName -First 1
-          & $st sign /fd SHA256 /f cert.pfx /p $env:PFX_PW /tr http://timestamp.digicert.com /td SHA256 kannaka-setup-windows.msi
-          Remove-Item cert.pfx
+          $ErrorActionPreference = 'Stop'
+          $b64 = if ($env:PFX_B64) { $env:PFX_B64 } else { $env:REAL_PFX_B64 }
+          $pw  = if ($env:PFX_B64) { $env:PFX_PW }  else { $env:REAL_PFX_PW }
+          [IO.File]::WriteAllBytes("$PWD\cert.pfx", [Convert]::FromBase64String($b64))
+          try {
+            # Sorted NEWEST first. Unsorted, Get-ChildItem returns SDK versions
+            # in directory order, so a runner carrying several Windows Kits
+            # could sign with a years-old signtool — which is the kind of thing
+            # that works until the day a new digest or timestamp option is
+            # required and then fails obscurely.
+            $st = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -like "*\x64\*" } |
+                  Sort-Object { try { [version]($_.FullName -replace '.*\\10\\bin\\([0-9.]+)\\.*','$1') } catch { [version]'0.0' } } -Descending |
+                  Select-Object -ExpandProperty FullName -First 1
+            if (-not $st) { throw "signtool.exe not found under the Windows 10 SDK — cannot sign" }
+            Write-Host "signtool: $st"
+            & $st sign /fd SHA256 /f cert.pfx /p $pw /tr http://timestamp.digicert.com /td SHA256 kannaka-setup-windows.msi
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit $LASTEXITCODE" }
+          } finally {
+            # In `finally` so a failed signing does not leave a decrypted
+            # certificate sitting in the workspace next to the artifact.
+            Remove-Item cert.pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      # The half that was missing. Signing that quietly did nothing would have
+      # shipped an unsigned installer under a release that claims to be signed —
+      # the same silent-success shape as the msi's old Return="ignore".
+      - name: Verify the .msi carries a signature
+        if: env.DO_SIGN == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sig = Get-AuthenticodeSignature kannaka-setup-windows.msi
+          Write-Host "status: $($sig.Status)  signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -eq 'NotSigned' -or -not $sig.SignerCertificate) {
+            throw "the .msi is not signed — refusing to publish it as signed"
+          }
+          if ($env:SMOKE -eq 'true') {
+            # A throwaway cert cannot chain to a trusted root, and must not be
+            # allowed to look like it did. Asserting the failure is what keeps
+            # this test honest about what it proved.
+            if ($sig.Status -eq 'Valid') { throw "a self-signed smoke cert reported Valid — the check is not discriminating" }
+            Write-Host "::notice::smoke test: the msi was signed and the untrusted chain was correctly rejected ($($sig.Status))"
+          } elseif ($sig.Status -ne 'Valid') {
+            throw "signature present but not trusted: $($sig.Status) — a real certificate must chain to a trusted root"
+          }
+
       - uses: actions/upload-artifact@v4
         with: { name: kannaka-setup-windows-msi, path: kannaka-setup-windows.msi }
       - uses: softprops/action-gh-release@v2

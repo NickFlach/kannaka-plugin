@@ -89,7 +89,44 @@ jobs:
           SIGN_ID: ${{ secrets.MACOS_SIGN_IDENTITY }}
         run: |
           trap 'rm -f cert.p12' EXIT
-          echo "$CERT_B64" | base64 -d > cert.p12
+          echo "$CERT_B64" | base64 -d > cert.p12 2>/dev/null || true
+
+          # `security import` reports a corrupt FILE and a wrong PASSWORD with
+          # the same message — "MAC verification failed ... (wrong password?)" —
+          # and they have completely different fixes. So the file is inspected
+          # first, and the operator is told which of the two they are actually
+          # looking at.
+          SZ=$(wc -c < cert.p12 | tr -d ' ')
+          echo "decoded .p12 is ${SZ} bytes"
+          if [ "$SZ" -lt 500 ]; then
+            echo "::error::the decoded .p12 is only ${SZ} bytes — the secret did not survive the trip."
+            echo "::error::Re-encode with:  base64 -i yourcert.p12 | tr -d '\\n' | pbcopy"
+            echo "::error::and paste it whole. A wrapped or truncated blob decodes to garbage."
+            exit 1
+          fi
+          # A PKCS#12 is DER: a SEQUENCE, so the first byte is 0x30.
+          HDR=$(od -An -tx1 -N2 cert.p12 | tr -d ' \n')
+          if [ "${HDR#30}" = "$HDR" ]; then
+            echo "::error::decoded bytes do not start with a DER SEQUENCE (got 0x${HDR}) — this is not a .p12."
+            echo "::error::The base64 was mangled in transit, or the wrong file was encoded."
+            exit 1
+          fi
+          echo "header looks like DER PKCS#12 (0x${HDR})"
+
+          # Now separate the two causes. openssl can open the container with the
+          # password without involving the keychain, so a failure HERE is the
+          # password and a success means the password is right and something
+          # about the keychain import is at fault instead.
+          if openssl pkcs12 -in cert.p12 -passin pass:"$CERT_PW" -noout -legacy 2>/dev/null \
+             || openssl pkcs12 -in cert.p12 -passin pass:"$CERT_PW" -noout 2>/dev/null; then
+            echo "::notice::the export password opens this .p12 — the file and password are both good"
+          else
+            echo "::error::the .p12 decoded correctly (${SZ} bytes, valid DER) but MACOS_CERT_PASSWORD does not open it."
+            echo "::error::That is the password you typed TWICE into Keychain Access's 'protect the exported items' dialog —"
+            echo "::error::not your Mac login password, and not your Apple ID. Re-export with a known password if unsure."
+            exit 1
+          fi
+
           security create-keychain -p actions build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p actions build.keychain

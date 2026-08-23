@@ -23,6 +23,8 @@ SKIP_TUI=0
 # them leaves an existing credential file untouched rather than blanking it.
 NATS_USER_ARG="${KANNAKA_NATS_USER:-}"
 NATS_PASS_ARG="${KANNAKA_NATS_PASSWORD:-}"
+CLAIM=0
+PORTAL_API="${KANNAKA_PORTAL_API:-https://ninja-portal.com}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-claude) WITH_CLAUDE=1 ;;
@@ -32,6 +34,7 @@ while [ $# -gt 0 ]; do
     --nats-password) NATS_PASS_ARG="${2:-}"; shift ;;
     --nats-user=*) NATS_USER_ARG="${1#*=}" ;;
     --nats-password=*) NATS_PASS_ARG="${1#*=}" ;;
+    --claim) CLAIM=1 ;;
   esac
   shift
 done
@@ -171,6 +174,63 @@ fi
 # ───────────────────────────────────────────────────────────────────────────
 CREDS="$HOME/.kannaka-nats.env"
 
+# Collect credentials without ever putting one on a command line.
+#
+# `--nats-user U --nats-password P` works and is kept, but it writes both
+# secrets into shell history and into the process table. `--claim` asks the
+# portal for a claim, shows a SHORT code, and waits while the subscriber
+# approves that code on their pass page. Nothing secret is typed here and
+# nothing secret is echoed.
+#
+# Best-effort by design: a portal that is down, a person who wanders off, a
+# box with no `curl` — none of that should cost somebody a working engine, so
+# every failure warns and falls through to the anonymous read-only swarm.
+claim_credentials() {
+  have curl || { warn "--claim needs curl"; return 1; }
+  cl_start=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' \
+    "$PORTAL_API/api/claim/start" 2>/dev/null) || { warn "could not reach $PORTAL_API"; return 1; }
+
+  # sed rather than a JSON parser: `jq` is not a reasonable prerequisite for an
+  # installer, and these three fields are flat strings the portal emits itself.
+  cl_id=$(printf '%s' "$cl_start" | sed -n 's/.*"claim_id" *: *"\([a-f0-9]*\)".*/\1/p')
+  cl_code=$(printf '%s' "$cl_start" | sed -n 's/.*"user_code" *: *"\([A-Z0-9-]*\)".*/\1/p')
+  cl_url=$(printf '%s' "$cl_start" | sed -n 's/.*"verify_url" *: *"\([^"]*\)".*/\1/p')
+  [ -n "$cl_id" ] && [ -n "$cl_code" ] || { warn "the portal did not return a claim"; return 1; }
+
+  printf '\n'
+  say "To link your Constellation Pass, open:"
+  say "    ${cl_url:-$PORTAL_API/link}"
+  say "and enter this code:"
+  printf '\n        \033[1m%s\033[0m\n\n' "$cl_code"
+  say "Waiting for approval (Ctrl-C to skip)…"
+
+  # ~10 minutes at 5s, matching the claim's own TTL, so the loop and the
+  # server stop caring at the same moment rather than one outliving the other.
+  cl_n=0
+  while [ "$cl_n" -lt 120 ]; do
+    sleep 5
+    cl_n=$((cl_n + 1))
+    cl_poll=$(curl -fsS -X POST -H 'content-type: application/json' \
+      -d "{\"claim_id\":\"$cl_id\"}" "$PORTAL_API/api/claim/poll" 2>/dev/null) || continue
+    case "$cl_poll" in
+      *'"status":"approved"'*|*'"status": "approved"'*)
+        NATS_USER_ARG=$(printf '%s' "$cl_poll" | sed -n 's/.*"nats_user" *: *"\([^"]*\)".*/\1/p')
+        NATS_PASS_ARG=$(printf '%s' "$cl_poll" | sed -n 's/.*"nats_password" *: *"\([^"]*\)".*/\1/p')
+        [ -n "$NATS_USER_ARG" ] && [ -n "$NATS_PASS_ARG" ] || { warn "approval returned no credentials"; return 1; }
+        ok "Pass linked as $NATS_USER_ARG"
+        return 0 ;;
+      *'"status":"expired"'*|*'"status": "expired"'*)
+        warn "that claim expired before it was approved — re-run to try again"; return 1 ;;
+    esac
+  done
+  warn "no approval within ten minutes — re-run with --claim to try again"
+  return 1
+}
+
+if [ "$CLAIM" = "1" ] && { [ -z "$NATS_USER_ARG" ] || [ -z "$NATS_PASS_ARG" ]; }; then
+  set +e; claim_credentials; set -e
+fi
+
 # Quote a value so that sourcing the file assigns it verbatim.
 #
 # This file is `.`-sourced by the user's shell, so an unquoted value is not a
@@ -263,7 +323,8 @@ if [ -n "${NATS_USER:-}" ]; then
 else
   printf '\n'
   say "Swarm access is ANONYMOUS (read-only). A Constellation Pass unlocks"
-  say "'kannaka swarm serve' and 'listen --auto-sync'. With your pass credentials:"
-  say "    curl -fsSL $INSTALL_URL | sh -s -- --nats-user USER --nats-password PASS"
-  say "or write them to ~/.kannaka-nats.env and re-run this installer."
+  say "'kannaka swarm serve' and 'listen --auto-sync'. To link yours:"
+  say "    curl -fsSL $INSTALL_URL | sh -s -- --claim"
+  say "It shows a short code to approve on your pass page — no password typed"
+  say "into a terminal, and nothing secret left in your shell history."
 fi

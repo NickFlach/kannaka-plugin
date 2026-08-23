@@ -24,7 +24,10 @@ param(
   # portal can hand a subscriber one line that works, and so a re-run without
   # them leaves existing credentials alone rather than clearing them.
   [string]$NatsUser = $env:KANNAKA_NATS_USER,
-  [string]$NatsPassword = $env:KANNAKA_NATS_PASSWORD
+  [string]$NatsPassword = $env:KANNAKA_NATS_PASSWORD,
+  # Link the pass without typing a secret. See Get-ClaimCredentials.
+  [switch]$Claim,
+  [string]$PortalApi = $(if ($env:KANNAKA_PORTAL_API) { $env:KANNAKA_PORTAL_API } else { "https://ninja-portal.com" })
 )
 
 $InstallUrl = "https://raw.githubusercontent.com/NickFlach/kannaka-plugin/master/install/install.ps1"
@@ -169,6 +172,55 @@ if (-not $SkipTui) {
 # credentials, and Machine scope would hand them to every account on the box
 # and require elevation to write.
 # ───────────────────────────────────────────────────────────────────────────
+# Collect credentials without ever putting one on a command line.
+#
+# -NatsUser/-NatsPassword work and are kept, but they write both secrets into
+# PSReadLine history and into the process table. -Claim asks the portal for a
+# claim, shows a SHORT code, and waits while the subscriber approves it on
+# their pass page. Nothing secret is typed and nothing secret is echoed.
+#
+# Best-effort: a portal that is down or a person who wanders off must not cost
+# somebody a working engine, so every failure warns and falls through to the
+# anonymous read-only swarm.
+function Get-ClaimCredentials {
+  param([string]$Api)
+  try {
+    $s = Invoke-RestMethod -Method Post -Uri "$Api/api/claim/start" -ContentType 'application/json' -Body '{}'
+  } catch { Warn "could not reach $Api ($_)"; return $null }
+  if (-not $s.claim_id -or -not $s.user_code) { Warn "the portal did not return a claim"; return $null }
+
+  Write-Host ""
+  Say "To link your Constellation Pass, open:"
+  Say "    $(if ($s.verify_url) { $s.verify_url } else { "$Api/link" })"
+  Say "and enter this code:"
+  Write-Host ""
+  Write-Host "        $($s.user_code)" -ForegroundColor White
+  Write-Host ""
+  Say "Waiting for approval (Ctrl-C to skip)…"
+
+  # ~10 minutes at 5s, matching the claim's own TTL so the loop and the server
+  # stop caring at the same moment.
+  for ($i = 0; $i -lt 120; $i++) {
+    Start-Sleep -Seconds 5
+    try {
+      $p = Invoke-RestMethod -Method Post -Uri "$Api/api/claim/poll" -ContentType 'application/json' `
+             -Body (@{ claim_id = $s.claim_id } | ConvertTo-Json -Compress)
+    } catch { continue }   # a 404 means expired; handled by the timeout below
+    if ($p.status -eq 'approved') {
+      if (-not $p.nats_user -or -not $p.nats_password) { Warn "approval returned no credentials"; return $null }
+      Ok "Pass linked as $($p.nats_user)"
+      return @{ User = $p.nats_user; Password = $p.nats_password }
+    }
+  }
+  Warn "no approval within ten minutes — re-run with -Claim to try again"
+  return $null
+}
+
+if ($Claim -and (-not $NatsUser -or -not $NatsPassword)) {
+  $c = Get-ClaimCredentials -Api $PortalApi
+  if ($c) { $NatsUser = $c.User; $NatsPassword = $c.Password }
+}
+
 if ($NatsUser -and $NatsPassword) {
   [Environment]::SetEnvironmentVariable("NATS_USER", $NatsUser, "User")
   [Environment]::SetEnvironmentVariable("NATS_PASSWORD", $NatsPassword, "User")
@@ -247,9 +299,11 @@ if ($env:NATS_USER) {
 } else {
   Write-Host ""
   Say "Swarm access is ANONYMOUS (read-only). A Constellation Pass unlocks"
-  Say "'kannaka swarm serve' and 'listen --auto-sync'. With your pass credentials:"
+  Say "'kannaka swarm serve' and 'listen --auto-sync'. To link yours:"
   # `irm | iex` cannot take parameters — iex evaluates the text and the script's
   # param() block never sees the arguments. Rebuilding it as a scriptblock and
   # invoking THAT is the form that actually passes them.
-  Say "    & ([scriptblock]::Create((irm $InstallUrl))) -NatsUser USER -NatsPassword PASS"
+  Say "    & ([scriptblock]::Create((irm $InstallUrl))) -Claim"
+  Say "It shows a short code to approve on your pass page — no password typed"
+  Say "into a terminal, and nothing secret left in your history."
 }

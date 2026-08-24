@@ -24,6 +24,7 @@ SKIP_TUI=0
 NATS_USER_ARG="${KANNAKA_NATS_USER:-}"
 NATS_PASS_ARG="${KANNAKA_NATS_PASSWORD:-}"
 CLAIM=0
+CLAIM_ONLY=0
 PORTAL_API="${KANNAKA_PORTAL_API:-https://ninja-portal.com}"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +36,10 @@ while [ $# -gt 0 ]; do
     --nats-user=*) NATS_USER_ARG="${1#*=}" ;;
     --nats-password=*) NATS_PASS_ARG="${1#*=}" ;;
     --claim) CLAIM=1 ;;
+    # Link a pass on a machine that already has the engine. This is what the
+    # double-clickable launcher runs, so it must not spend a minute
+    # re-downloading binaries the user already has.
+    --claim-only) CLAIM=1; CLAIM_ONLY=1 ;;
   esac
   shift
 done
@@ -142,7 +147,7 @@ fetch_verified() {
   ok "$fv_label installed → $fv_dest"
 }
 
-fetch_verified "$RELEASE_REPO" "kannaka-${o}-${a}" "$DEST/kannaka" "kannaka" || exit 1
+[ "$CLAIM_ONLY" = "1" ] || fetch_verified "$RELEASE_REPO" "kannaka-${o}-${a}" "$DEST/kannaka" "kannaka" || exit 1
 
 # ───────────────────────────────────────────────────────────────────────────
 # 2. PATH: make sure ~/.local/bin is reachable, or `kannaka` looks like it
@@ -180,7 +185,7 @@ fi
 # no main.rs — compiled into the kannaka binary above, so anyone who has
 # kannaka already has its physics. There is nothing separate to install.)
 # ───────────────────────────────────────────────────────────────────────────
-if [ "$SKIP_TUI" != "1" ]; then
+if [ "$SKIP_TUI" != "1" ] && [ "$CLAIM_ONLY" != "1" ]; then
   set +e
   fetch_verified "$TUI_REPO" "kannaka-tui-${o}-${a}" "$DEST/kannaka-tui" "kannaka-tui"
   tui_rc=$?
@@ -282,6 +287,45 @@ if [ -n "$NATS_USER_ARG" ] && [ -n "$NATS_PASS_ARG" ]; then
   ok "Constellation Pass credentials written → $CREDS"
 elif [ -f "$CREDS" ]; then
   say "Constellation Pass credentials already present → $CREDS"
+else
+  # ── The double-clickable way to link a pass ──────────────────────────────
+  #
+  # The .pkg runs this script from a postinstall, where there is no terminal:
+  # a claim shows a code and then polls, and neither can happen inside a
+  # graphical installer. So the engine installs, and the LINKING is left as one
+  # thing to double-click.
+  #
+  # `.command` is the macOS extension that opens in Terminal on double-click —
+  # it exists precisely for this. On Linux the same file is a normal executable
+  # script; desktop environments vary too much to promise a double-click there,
+  # so the file says how to run it.
+  #
+  # Written to the Desktop because a setup step nobody can find is a setup step
+  # nobody performs. It removes itself once the pass is linked, so it is litter
+  # for exactly as long as it is useful.
+  desk="$HOME/Desktop"
+  [ -d "$desk" ] || desk="$HOME"
+  launcher="$desk/Link Kannaka.command"
+  cat > "$launcher" <<LAUNCHER
+#!/bin/sh
+# Links your Constellation Pass to this machine. Double-click me.
+# Deletes itself once the pass is linked.
+cd "\$(dirname "\$0")" 2>/dev/null || true
+printf '\n  Linking your Constellation Pass…\n\n'
+if curl -fsSL "$INSTALL_URL" | sh -s -- --claim-only; then
+  printf '\n  Done. You can close this window.\n\n'
+  rm -f "\$0"
+else
+  printf '\n  That did not complete. You can double-click this again to retry.\n\n'
+fi
+printf '  Press return to close.'
+read _ignored
+LAUNCHER
+  chmod +x "$launcher"
+  printf '\n'
+  ok "Engine installed. One step left: your Constellation Pass is not linked yet."
+  say "Double-click \"Link Kannaka.command\" on your Desktop to finish."
+  say "(or run:  curl -fsSL $INSTALL_URL | sh -s -- --claim-only)"
 fi
 
 # Make an interactive shell actually load them. Guarded and idempotent, same
@@ -347,8 +391,15 @@ if [ -n "${NATS_USER:-}" ]; then
 else
   printf '\n'
   say "Swarm access is ANONYMOUS (read-only). A Constellation Pass unlocks"
-  say "'kannaka swarm serve' and 'listen --auto-sync'. To link yours:"
-  say "    curl -fsSL $INSTALL_URL | sh -s -- --claim"
+  say "'kannaka swarm serve' and 'listen --auto-sync'."
+  if [ -n "${launcher:-}" ] && [ -f "${launcher:-}" ]; then
+    # Point at the thing that was just put in front of them, not at a command
+    # they would have to retype. The curl form stays as the second line for
+    # anyone who would rather paste it.
+    say "To link yours: double-click \"$(basename "$launcher")\" on your Desktop."
+  else
+    say "To link yours:  curl -fsSL $INSTALL_URL | sh -s -- --claim"
+  fi
   say "It shows a short code to approve on your pass page — no password typed"
   say "into a terminal, and nothing secret left in your shell history."
 fi

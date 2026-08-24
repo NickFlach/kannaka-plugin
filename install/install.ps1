@@ -27,6 +27,9 @@ param(
   [string]$NatsPassword = $env:KANNAKA_NATS_PASSWORD,
   # Link the pass without typing a secret. See Get-ClaimCredentials.
   [switch]$Claim,
+  # Link a pass on a machine that already has the engine. What the
+  # double-clickable launcher runs, so it must not re-download binaries.
+  [switch]$ClaimOnly,
   [string]$PortalApi = $(if ($env:KANNAKA_PORTAL_API) { $env:KANNAKA_PORTAL_API } else { "https://ninja-portal.com" })
 )
 
@@ -111,7 +114,9 @@ function Install-Verified {
 }
 
 $exe = Join-Path $dest "kannaka.exe"
-Install-Verified -Repo $ReleaseRepo -Asset "kannaka-windows-x86_64.exe" -Target $exe -Label "kannaka"
+if (-not $ClaimOnly) {
+  Install-Verified -Repo $ReleaseRepo -Asset "kannaka-windows-x86_64.exe" -Target $exe -Label "kannaka"
+}
 
 # ───────────────────────────────────────────────────────────────────────────
 # 2. PATH: make sure ~/.local/bin is reachable, or `kannaka` will look like it
@@ -144,7 +149,7 @@ try {
 # has its physics. There is nothing separate to install.)
 # ───────────────────────────────────────────────────────────────────────────
 $tui = Join-Path $dest "kannaka-tui.exe"
-if (-not $SkipTui) {
+if (-not $SkipTui -and -not $ClaimOnly) {
   try {
     Install-Verified -Repo $TuiRepo -Asset "kannaka-tui-windows-x86_64.exe" -Target $tui -Label "kannaka-tui"
   } catch {
@@ -216,6 +221,7 @@ function Get-ClaimCredentials {
   return $null
 }
 
+if ($ClaimOnly) { $Claim = $true }
 if ($Claim -and (-not $NatsUser -or -not $NatsPassword)) {
   $c = Get-ClaimCredentials -Api $PortalApi
   if ($c) { $NatsUser = $c.User; $NatsPassword = $c.Password }
@@ -235,6 +241,42 @@ if ($NatsUser -and $NatsPassword) {
   if (-not $env:NATS_USER) {
     $env:NATS_USER = [Environment]::GetEnvironmentVariable("NATS_USER", "User")
   }
+} elseif (-not $ClaimOnly) {
+  # ── The double-clickable way to link a pass ────────────────────────────────
+  #
+  # The .msi runs this script from a custom action, where there is no console:
+  # a claim shows a code and then polls, and neither can happen inside a
+  # graphical installer. So the engine installs, and the LINKING is left as one
+  # thing to double-click.
+  #
+  # A .cmd rather than a .ps1: double-clicking a .ps1 opens it in Notepad by
+  # default (and ExecutionPolicy may refuse it anyway), while a .cmd just runs.
+  # It removes itself once the pass is linked, so it is litter for exactly as
+  # long as it is useful.
+  $desk = [Environment]::GetFolderPath('Desktop')
+  if (-not $desk) { $desk = $HOME }
+  $launcher = Join-Path $desk 'Link Kannaka.cmd'
+  @"
+@echo off
+REM Links your Constellation Pass to this machine. Double-click me.
+REM Deletes itself once the pass is linked.
+echo.
+echo   Linking your Constellation Pass...
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm $InstallUrl))) -ClaimOnly"
+if errorlevel 1 (
+  echo.
+  echo   That did not complete. You can double-click this again to retry.
+) else (
+  echo.
+  echo   Done. You can close this window.
+  del "%~f0"
+)
+pause
+"@ | Set-Content -Path $launcher -Encoding ASCII
+  Write-Host ""
+  Ok "Engine installed. One step left: your Constellation Pass is not linked yet."
+  Say "Double-click `"Link Kannaka.cmd`" on your Desktop to finish."
 }
 
 # ───────────────────────────────────────────────────────────────────────────

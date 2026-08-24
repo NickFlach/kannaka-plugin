@@ -44,6 +44,42 @@ warn() { printf '\033[33m!\033[0m %s\n' "$1" >&2; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$1"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# The rc file THIS user's interactive shell will actually read, created if it
+# does not exist yet.
+#
+# The previous version picked the right file and then threw it away:
+#
+#   case "$SHELL" in *zsh) rc="$HOME/.zshrc";; esac
+#   [ -f "$rc" ] || rc="$HOME/.profile"     # <- here
+#
+# A fresh macOS account has no ~/.zshrc, so that fallback fired and wrote both
+# the PATH line and the swarm credentials into ~/.profile — which zsh does not
+# read for interactive shells. The install reported success and then `kannaka`
+# was command-not-found forever, with NATS_USER unset to match. Hit by a real
+# subscriber on 2026-08-23.
+#
+# A missing rc file is not a reason to write somewhere else; it is a reason to
+# create it. Only a shell we cannot identify falls back to ~/.profile.
+shell_rc() {
+  rc=""
+  case "${SHELL:-}" in
+    *zsh)  rc="$HOME/.zshrc" ;;
+    *bash)
+      # bash on macOS reads ~/.bash_profile for login shells and ignores
+      # ~/.bashrc; Terminal opens login shells. Prefer an existing
+      # ~/.bash_profile so the line is somewhere that is actually sourced.
+      if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ -f "$HOME/.bash_profile" ]; then
+        rc="$HOME/.bash_profile"
+      else
+        rc="$HOME/.bashrc"
+      fi
+      ;;
+    *)     rc="$HOME/.profile" ;;
+  esac
+  [ -e "$rc" ] || : > "$rc"
+  printf '%s' "$rc"
+}
+
 say "Kannaka installer"
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -116,13 +152,7 @@ case ":$PATH:" in
   *":$DEST:"*) ;;  # already there
   *)
     # Persist to the user's shell rc (guarded + idempotent), and export for now.
-    rc=""
-    case "${SHELL:-}" in
-      *zsh)  rc="$HOME/.zshrc" ;;
-      *bash) rc="$HOME/.bashrc" ;;
-      *)     rc="$HOME/.profile" ;;
-    esac
-    [ -f "$rc" ] || rc="$HOME/.profile"
+    rc="$(shell_rc)"
     if ! grep -qs '\.local/bin' "$rc" 2>/dev/null; then
       printf '\n# kannaka\ncase ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac\n' >> "$rc"
       say "Added ~/.local/bin to PATH in $rc — open a NEW terminal for 'kannaka' to be found."
@@ -258,13 +288,7 @@ fi
 # shape as the PATH block above, and pointed at the file rather than carrying
 # the secret itself — so rotating credentials is one file write and no rc edit.
 if [ -f "$CREDS" ]; then
-  crc=""
-  case "${SHELL:-}" in
-    *zsh)  crc="$HOME/.zshrc" ;;
-    *bash) crc="$HOME/.bashrc" ;;
-    *)     crc="$HOME/.profile" ;;
-  esac
-  [ -f "$crc" ] || crc="$HOME/.profile"
+  crc="$(shell_rc)"
   if ! grep -qs 'kannaka-nats.env' "$crc" 2>/dev/null; then
     printf '\n# kannaka swarm credentials\n[ -f "$HOME/.kannaka-nats.env" ] && . "$HOME/.kannaka-nats.env"\n' >> "$crc"
     say "Shell will load your swarm credentials from $crc — open a NEW terminal."

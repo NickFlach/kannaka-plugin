@@ -31,6 +31,9 @@ jobs:
           done < <(find . -name '*.sh' -not -path './.git/*')
           exit $rc
 
+      - name: shell-rc — the installer writes to a file the shell actually reads
+        run: bash test/shell-rc.test.sh
+
       - name: node --check — parse every .mjs/.js
         run: |
           set -euo pipefail

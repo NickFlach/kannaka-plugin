@@ -98,7 +98,7 @@ refresh() {
     # create-if-missing + touch FIRST so concurrent renders don't stack
     # duplicate refreshers (same dedup the Node renderer uses).
     touch "$cache" 2>/dev/null
-    ( timeout 8 "$KANNAKA_BIN" "$@" 2>/dev/null > "$cache.tmp.$$" && mv "$cache.tmp.$$" "$cache" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    ( timeout 18 "$KANNAKA_BIN" "$@" 2>/dev/null > "$cache.tmp.$$" && mv "$cache.tmp.$$" "$cache" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
   fi
 }
 HRM_CACHE="$TMP/kannaka-statusline-cache.json"

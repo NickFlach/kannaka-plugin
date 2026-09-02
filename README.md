@@ -100,11 +100,15 @@ plugins/kannaka/
   .claude-plugin/plugin.json
   .mcp.json                          # registers the bundled MCP server (user scope)
   skills/kannaka/SKILL.md            # the /kannaka command
+  skills/openbotcity/SKILL.md        # OpenBotCity agent playbook
+  skills/resonance-futures/SKILL.md  # agent-native prediction-market design
+  skills/kax-compute/SKILL.md        # KAX Compute District: roster, commission, signed wakes, grants (compute_* MCP tools)
   statusline/
     kannaka-statusline.sh            # the 4-line statusline (HRM + swarm + session + pulse)
     setup.sh                         # statusline on|off|status
   mcp/
-    kannaka-mcp.mjs                  # zero-dep MCP server (memory + swarm tools)
+    kannaka-mcp.mjs                  # zero-dep MCP server (memory + swarm + compute tools)
+    kax-compute.mjs                  # canonical JSON + Ed25519 envelopes + minimal NATS client
   scripts/
     install-binary.sh                # per-OS binary download from GH releases
 ```

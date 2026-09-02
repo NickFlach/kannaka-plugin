@@ -171,8 +171,8 @@ Signers today: `operator-nick`, `bridge-nostr` (the Nostr owner bridge),
 ## The CLI twin (`kannaka compute`)
 
 Same wire contract, same key and creds; adds `--dry-run`, `identity` and
-`keygen`. Resolve the binary as the `kannaka` skill describes. (Shipping in
-kannaka-memory — verify the usage block against the merged release.)
+`keygen`. Resolve the binary as the `kannaka` skill describes. (kannaka-memory PR #888,
+`feat/cli-compute-district`; usage below matches that branch.)
 
 ```
 kannaka compute list [--json]

@@ -73,6 +73,15 @@ After `statusline on`, tell the user to restart the session (or wait one render)
 | `swarm loop` | Self-directed sensemaking cycle through the 5 swarm states (ADR-0035 Wave 4) |
 | `inbox tail` | Stream agent-to-agent inbox messages |
 
+### KAX Compute District (MCP tools, no CLI subcommand)
+| Tool | Description |
+|---------|-------------|
+| `compute_machines` | Roster over HTTP: machine, derived state (active/hibernated/suspended/unknown), credit balance (internal accounting units), jobs served (`json: true` for rows) |
+| `compute_status` | Listen `seconds` (default 10, max 60) on `KAX.machines.status` + `KAX.machine.*.events`; latest fleet snapshot + events |
+| `compute_events` | Tail `KAX.machine.<machine>.events` for `seconds` |
+| `compute_wake` | `machine`, `prompt`, `wait` (s, max 120) — Ed25519-signed job envelope to `.inbox`, reply from `.outbox`; refuses without `KAX_OPERATOR_KEY_FILE` (default `~/.kannaka/kax-operator.key`) |
+| `compute_grant` | `machine`, `credits` (whole integer, 1-1000), `wait` — signed `credit_grant`; watches `.events` for the ledger row |
+
 ## Notes
 - All commands shell out to the resolved binary, e.g. `"$KANNAKA_BIN" recall "query" --top-k 5`.
 - `status` / `swarm status` print HRM boot logs to **stderr** and clean JSON to **stdout** — redirect `2>/dev/null` when parsing.

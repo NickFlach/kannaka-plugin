@@ -31,8 +31,13 @@ The plugin ships a **zero-dependency** MCP server (`mcp/kannaka-mcp.mjs`, regist
 | `swarm_status` | NATS swarm snapshot (peers, frequency, phase) |
 | `swarm_send` | Message the swarm (`say` + text for chat, or any verb) |
 | `swarm_tail` | Listen to the live constellation pulse for N seconds |
+| `compute_machines` | KAX Compute District roster over HTTP (state, credit balance, jobs served) |
+| `compute_status` | Fleet snapshot + lifecycle events from `KAX.machines.status` / `KAX.machine.*.events` for N seconds |
+| `compute_events` | Tail one machine's `KAX.machine.<id>.events` for N seconds |
+| `compute_wake` | Sign (Ed25519, operator seed) + publish a job envelope to a machine's inbox, optionally wait for the reply |
+| `compute_grant` | Sign + publish a `credit_grant` (whole credits) to a machine's wallet |
 
-All shell out to the resolved `kannaka` binary; they degrade gracefully if it's absent.
+Memory + swarm tools shell out to the resolved `kannaka` binary and degrade gracefully if it's absent. The compute tools read the bus through `kannaka swarm tail --subject` with credentials from `NATS_USER`/`NATS_PASSWORD` or `~/.kannaka-nats.env` (KAX subjects are denied to anonymous connections), and sign natively: `KAX_OPERATOR_KEY_FILE` (default `~/.kannaka/kax-operator.key`, a 32-byte hex Ed25519 seed) and `KAX_OPERATOR_SIGNER` (default `operator-nick`, must be in the host's `trusted_keys.json`). The seed is never logged.
 
 ## Install
 

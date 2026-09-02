@@ -43,6 +43,9 @@ jobs:
           done < <(find . \( -name '*.mjs' -o -name '*.js' \) -not -path './.git/*')
           exit $rc
 
+      - name: node --test — MCP compute tools (canonical JSON + Ed25519 golden vectors, NATS client, stdio server)
+        run: node --test test/kax-compute.test.mjs
+
       - name: version-pin — kannaka-memory latest release + installer assets exist
         run: bash .github/scripts/check-release-assets.sh
 

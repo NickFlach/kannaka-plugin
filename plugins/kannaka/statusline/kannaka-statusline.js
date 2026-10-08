@@ -89,7 +89,28 @@ function refresh(cache, maxAgeS, args) {
   `);
 }
 refresh(HRM_CACHE, 30, ["status"]);
-refresh(SWARM_CACHE, 20, ["swarm", "status"]);
+
+// ---- swarm refresh gate -----------------------------------------------------------
+// `swarm status` and `swarm tail` each open a NATS connection. Under a SCOPED
+// identity (NATS_USER set to a per-agent user) the client asks the hub for
+// subjects that user may not read, is refused, exits, and the next render
+// asks again — the client never logs the refusal, so the machine doing it
+// cannot see it (kannaka-labs/kannaka-memory#1101; on 2026-10-07 one desktop's
+// statusline put ~600 refused lines per ten minutes on the hub for hours).
+// Until the client remembers a refusal, the swarm refreshers run only for an
+// unscoped (anonymous) connection, which the hub permits on these subjects.
+// KANNAKA_STATUSLINE_SWARM=1 forces them on; =0 forces them off. `status`
+// (the HRM line) opens no hub connection and is never gated.
+const SWARM_GATE = process.env.KANNAKA_STATUSLINE_SWARM;
+const SCOPED_IDENTITY = Boolean(process.env.NATS_USER);
+const SWARM_ON = SWARM_GATE === "1" ? true : SWARM_GATE === "0" ? false : !SCOPED_IDENTITY;
+const SWARM_OFF_WHY = SWARM_GATE === "0" ? "KANNAKA_STATUSLINE_SWARM=0" : "NATS_USER set; kannaka-memory#1101";
+// Cadence: one connection a minute for the status read (was every 20 s) and
+// one three-minute tail (was 60 s): a fifth of the connections per hour.
+const SWARM_STATUS_MAX_AGE_S = 60;
+const PULSE_TAIL_MS = 180000;
+const PULSE_RESPAWN_S = 185;
+if (SWARM_ON) refresh(SWARM_CACHE, SWARM_STATUS_MAX_AGE_S, ["swarm", "status"]);
 
 // --- constellation pulse feed: live `swarm tail`, timeout-bounded respawn -------
 // Not a persistent daemon — a 60s self-killing tail respawned by the first render
@@ -105,7 +126,7 @@ const FEED = path.join(TMP, "kannaka-pulse-feed.txt");
 // are the same ground truth, so the render prefers this count when higher.
 const PRESENCE = path.join(TMP, "kannaka-pulse-presence.json");
 const PULSE_SPAWN = path.join(TMP, "kannaka-pulse-spawn");
-if (mtimeAge(PULSE_SPAWN) > 62) {
+if (SWARM_ON && mtimeAge(PULSE_SPAWN) > PULSE_RESPAWN_S) {
   try { fs.writeFileSync(PULSE_SPAWN, ""); } catch { }
   detachedNode(`
     const{spawn}=require("child_process"),fs=require("fs"),rl=require("readline");
@@ -155,7 +176,7 @@ if (mtimeAge(PULSE_SPAWN) > 62) {
         fs.renameSync(tmp,FEED);
       }catch(e){}
       process.exit(0);
-    },60000);
+    },${PULSE_TAIL_MS});
   `);
 }
 
@@ -218,8 +239,11 @@ let L1;
 // ============================ LINE 2 — SWARM ==================================
 let L2;
 {
-  const s = readJson(SWARM_CACHE);
-  if (s) {
+  // Gated off: say so, and do not render a stale cache as if it were live.
+  const s = SWARM_ON ? readJson(SWARM_CACHE) : null;
+  if (!SWARM_ON) {
+    L2 = `${BG_DEEP}${FG_BLUE}${BOLD} SWARM ${RST}${BG_DARK} ${FG_DIM}swarm refresh off (${SWARM_OFF_WHY}) ${GL.dash} KANNAKA_STATUSLINE_SWARM=1 to enable${RST} `;
+  } else if (s) {
     const CONN = g(s, "nats.connected", false);
     let PEERS = g(s, "swarm.peers", null) ?? g(s, "nats.peers", 0);
     // `swarm status` under-counts to 0 when its NATS user can't read the

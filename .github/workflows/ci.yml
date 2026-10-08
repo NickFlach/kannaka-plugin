@@ -46,6 +46,9 @@ jobs:
       - name: node --test — MCP compute tools (canonical JSON + Ed25519 golden vectors, NATS client, stdio server)
         run: node --test test/kax-compute.test.mjs
 
+      - name: node --test — statusline opens no NATS connection under a scoped identity (kannaka-memory#1101)
+        run: node --test test/statusline-swarm-gate.test.mjs
+
       - name: version-pin — kannaka-memory latest release + installer assets exist
         run: bash .github/scripts/check-release-assets.sh
 

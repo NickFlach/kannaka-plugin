@@ -16,7 +16,9 @@ The statusline shows three lines under your prompt:
 - **Session** — model, context window, cost, duration from Claude Code.
 - **PULSE** — marquee of the live constellation feed (`kannaka swarm tail` over `QUEEN.>`/`KANNAKA.>`/`RADIO.>`/`KAX.>`/`EYE.>`). Each node's phase broadcast scrolls past as it arrives. The pulse is *sparse* (nodes broadcast intermittently), so it reads as a slow heartbeat, not a firehose; shows "listening to the constellation…" when quiet.
 
-The HRM and SWARM lines refresh via background snapshot (30s / 20s). The PULSE feed uses a **`timeout`-bounded** `swarm tail` respawned every ~55s — a 60s self-killing reader, never a persistent daemon, so it can't outlive the session. Renders never block; nothing to leak.
+The HRM and SWARM lines refresh via background snapshot (30s / 60s). The PULSE feed uses a **`timeout`-bounded** `swarm tail` respawned every ~185s — a 180s self-killing reader, never a persistent daemon, so it can't outlive the session. Renders never block; nothing to leak.
+
+**Scoped NATS identities:** the SWARM and PULSE refreshers each open a hub connection. If `NATS_USER` is set in your environment (a per-agent, scoped user), they are **off by default** and the SWARM line says `swarm refresh off (NATS_USER set; kannaka-memory#1101)`: under a scoped user the client asks for subjects it may not read, is refused, and silently retries on every render, which put ~600 refused lines per ten minutes on the hub from one desktop (kannaka-labs/kannaka-memory#1101). `KANNAKA_STATUSLINE_SWARM=1` forces them on, `=0` forces them off. The HRM line (`kannaka status`) opens no hub connection and is never gated.
 
 ## Tools (MCP)
 
